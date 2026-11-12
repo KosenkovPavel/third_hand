@@ -1,4 +1,13 @@
 # SDK Т-Инвестиций (t_tech) завендорен в vendor/t_tech — на PyPI его нет.
+# Ниже — его runtime-зависимости (из METADATA t-tech-investments 1.49.3, Python >=3.11).
+cachetools>=5.2.0,<6.0.0
+deprecation>=2.1.0,<3.0.0
+grpcio>=1.75.0,<2.0.0
+iprotopy>=0.3.0,<0.4.0
+protobuf>=6.31.1,<7.0.0
+python-dateutil>=2.8.2,<3.0.0
+sentry-sdk>=2.47.0,<3.0.0
+
 python-dotenv>=1.0
 rich>=13.0
 mcp>=1.0,<2
