@@ -37,28 +37,32 @@ class TinkoffClient:
 
     def __init__(self, token: str) -> None:
         self._token = token
+        # Один gRPC-канал на весь клиент. Раньше каждый вызов делал
+        # ``with Client(token) as client:`` — то есть новый канал + TLS-хендшейк
+        # на КАЖДЫЙ запрос (секунды на портфель из-за per-position вызовов).
+        # gRPC-канал потокобезопасен, поэтому один Services переиспользуем везде.
+        self._client = Client(token)
+        self._services = self._client.__enter__()
 
     def snapshot(self, account_id: str) -> PortfolioSnapshot:
         """Канонический снимок портфеля (метод протокола ``AccountClient``)."""
         return build_snapshot(self, account_id)
 
     def accounts(self) -> list[Account]:
-        with Client(self._token) as client:
-            resp = client.users.get_accounts()
-            return [
-                Account(
-                    id=acc.id,
-                    name=acc.name,
-                    account_type=acc.type,
-                    status=acc.status,
-                    opened_date=acc.opened_date or None,
-                )
-                for acc in resp.accounts
-            ]
+        resp = self._services.users.get_accounts()
+        return [
+            Account(
+                id=acc.id,
+                name=acc.name,
+                account_type=acc.type,
+                status=acc.status,
+                opened_date=acc.opened_date or None,
+            )
+            for acc in resp.accounts
+        ]
 
     def get_portfolio(self, account_id: str):
-        with Client(self._token) as client:
-            return client.operations.get_portfolio(account_id=account_id)
+        return self._services.operations.get_portfolio(account_id=account_id)
 
     def get_operations(
         self,
@@ -66,12 +70,11 @@ class TinkoffClient:
         from_: datetime,
         to: datetime,
     ):
-        with Client(self._token) as client:
-            return client.operations.get_operations(
-                account_id=account_id,
-                from_=from_,
-                to=to,
-            )
+        return self._services.operations.get_operations(
+            account_id=account_id,
+            from_=from_,
+            to=to,
+        )
 
     def get_instrument(self, instrument_id: str, id_type=None):
         """Получить инструмент по FIGI или UID. Если id_type не задан — определяется автоматически."""
@@ -83,28 +86,25 @@ class TinkoffClient:
                 if "-" in instrument_id
                 else schemas.InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI
             )
-        with Client(self._token) as client:
-            return client.instruments.get_instrument_by(
-                id_type=id_type,
-                id=instrument_id,
-            )
+        return self._services.instruments.get_instrument_by(
+            id_type=id_type,
+            id=instrument_id,
+        )
 
     def get_candles(self, instrument_id: str, from_: datetime, to: datetime, interval):
-        with Client(self._token) as client:
-            return client.market_data.get_candles(
-                instrument_id=instrument_id,
-                from_=from_,
-                to=to,
-                interval=interval,
-            )
+        return self._services.market_data.get_candles(
+            instrument_id=instrument_id,
+            from_=from_,
+            to=to,
+            interval=interval,
+        )
 
     def find_instrument(self, query: str, ticker: str):
         """InstrumentShort по точному совпадению тикера в поиске (индексы, валюты)."""
-        with Client(self._token) as client:
-            resp = client.instruments.find_instrument(query=query)
-            for i in resp.instruments:
-                if i.ticker == ticker:
-                    return i
+        resp = self._services.instruments.find_instrument(query=query)
+        for i in resp.instruments:
+            if i.ticker == ticker:
+                return i
         return None
 
     def find_instrument_uid(self, query: str, ticker: str) -> str | None:
@@ -119,29 +119,25 @@ class TinkoffClient:
         return schemas.CandleInterval.CANDLE_INTERVAL_DAY
 
     def get_dividends(self, figi: str, from_: datetime, to: datetime):
-        with Client(self._token) as client:
-            return client.instruments.get_dividends(
-                figi=figi, from_=from_, to=to
-            )
+        return self._services.instruments.get_dividends(
+            figi=figi, from_=from_, to=to
+        )
 
     def get_shares(self):
         """Полный список акций (uid → Share) для маппинга секторов."""
-        with Client(self._token) as client:
-            return client.instruments.shares()
+        return self._services.instruments.shares()
 
     def get_forecast_by(self, instrument_id: str):
         from t_tech.invest import schemas
 
         req = schemas.GetForecastRequest(instrument_id=instrument_id)
-        with Client(self._token) as client:
-            return client.instruments.get_forecast_by(request=req)
+        return self._services.instruments.get_forecast_by(request=req)
 
     def get_insider_deals(self, instrument_id: str, limit: int = 10):
         from t_tech.invest import schemas
 
         req = schemas.GetInsiderDealsRequest(instrument_id=instrument_id, limit=limit)
-        with Client(self._token) as client:
-            return client.instruments.get_insider_deals(request=req)
+        return self._services.instruments.get_insider_deals(request=req)
 
     def get_rsi(self, instrument_uid: str, days: int = 30, length: int = 14) -> float | None:
         from datetime import timedelta, timezone
@@ -158,8 +154,7 @@ class TinkoffClient:
             type_of_price=schemas.TypeOfPrice.TYPE_OF_PRICE_CLOSE,
             length=length,
         )
-        with Client(self._token) as client:
-            resp = client.market_data.get_tech_analysis(request=req)
+        resp = self._services.market_data.get_tech_analysis(request=req)
         items = resp.technical_indicators
         if not items:
             return None
@@ -169,10 +164,9 @@ class TinkoffClient:
         return round(to_decimal(last), 1)
 
     def get_bond_coupons(self, instrument_id: str, from_: datetime, to: datetime):
-        with Client(self._token) as client:
-            return client.instruments.get_bond_coupons(
-                instrument_id=instrument_id, from_=from_, to=to
-            )
+        return self._services.instruments.get_bond_coupons(
+            instrument_id=instrument_id, from_=from_, to=to
+        )
 
     def get_bond(self, instrument_id: str):
         """Полные данные облигации (в т.ч. risk_level) по UID/FIGI."""
@@ -183,17 +177,14 @@ class TinkoffClient:
             if "-" in instrument_id
             else schemas.InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI
         )
-        with Client(self._token) as client:
-            return client.instruments.bond_by(id_type=id_type, id=instrument_id)
+        return self._services.instruments.bond_by(id_type=id_type, id=instrument_id)
 
     def get_bonds(self):
-        with Client(self._token) as client:
-            resp = client.instruments.bonds()
-            return list(resp.instruments)
+        resp = self._services.instruments.bonds()
+        return list(resp.instruments)
 
     def get_last_prices(self, figis: list[str]):
-        with Client(self._token) as client:
-            return client.market_data.get_last_prices(figi=figis)
+        return self._services.market_data.get_last_prices(figi=figis)
 
     def get_asset_fundamentals(self, asset_uids: list[str]):
         from t_tech.invest import schemas
@@ -202,8 +193,7 @@ class TinkoffClient:
         req.assets = []
         for uid in asset_uids:
             req.assets.append(uid)
-        with Client(self._token) as client:
-            return client.instruments.get_asset_fundamentals(request=req)
+        return self._services.instruments.get_asset_fundamentals(request=req)
 
     def imoex_return(
         self,

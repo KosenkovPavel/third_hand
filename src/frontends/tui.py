@@ -157,7 +157,6 @@ class ThirdHandApp(App):
             for btn_id, label, _choice in BUTTONS:
                 yield Button(label, id=btn_id)
             yield Button("Детально", id="btn-mode", variant="primary")
-            yield Button("Обновить", id="btn-refresh")
         yield Input(
             placeholder=(
                 "или напиши: рынок · календарь · новости · акции · облигации · выход"
@@ -223,9 +222,6 @@ class ThirdHandApp(App):
         if button_id == "btn-mode":
             self._toggle_mode()
             return
-        if button_id == "btn-refresh":
-            self._refresh()
-            return
         for btn_id, _label, choice in BUTTONS:
             if btn_id == button_id:
                 self._run(choice)
@@ -248,13 +244,6 @@ class ThirdHandApp(App):
         self.query_one("#status", Static).update(f"⟳ Собираю «{choice}»…")
         # run_worker вызывает work() без аргументов — оборачиваем в partial.
         self.run_worker(partial(self._build, choice), thread=True)
-
-    def _refresh(self) -> None:
-        """Сбрасывает кэш базы и пересобирает текущую секцию заново."""
-        with self._base_lock:
-            self.base_report = None
-            self.base_built_at = 0.0
-        self._run(self.last_choice or "портфель")
 
     def _get_base(self):
         """База (сеть) собирается один раз и живёт ``BASE_TTL_SECONDS``."""
