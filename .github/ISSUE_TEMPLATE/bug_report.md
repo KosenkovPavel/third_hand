@@ -17,7 +17,7 @@ labels: bug
 
 - Python: `python --version`
 - ОС:
-- Версия invest-helper:
+- Версия «Третьей руки»:
 
 ## Логи / вывод
 

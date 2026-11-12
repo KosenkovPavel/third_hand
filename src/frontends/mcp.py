@@ -21,7 +21,7 @@ from src.report_builder import build_report
 from . import connect
 from .cli import build_parser
 
-mcp = FastMCP("invest-helper")
+mcp = FastMCP("third-hand")
 
 # Прогресс и ошибки — в stderr, чтобы не ломать MCP-транспорт (stdout = JSON-RPC).
 _console = Console(file=sys.stderr)

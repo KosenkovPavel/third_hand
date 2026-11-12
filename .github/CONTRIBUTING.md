@@ -1,4 +1,4 @@
-# Вклад в invest-helper
+# Вклад в проект «Третья рука»
 
 Спасибо, что помогаешь проекту. Ниже — как быстро поднять окружение и внести изменение.
 
@@ -6,7 +6,7 @@
 
 ```bash
 git clone <repo-url>
-cd invest-helper
+cd third_hand
 python -m venv .venv
 . .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt

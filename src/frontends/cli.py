@@ -26,7 +26,7 @@ def _telegram_summary(report, cbr_rate: Decimal | None, usdrub: Decimal | None) 
     pnl = snapshot.total_pnl
     pnl_pct = (pnl / snapshot.invested * 100) if snapshot.invested else Decimal("0")
     lines = [
-        "invest-helper: сводка",
+        "Третья рука: сводка",
         f"Портфель: {fmt_money(snapshot.total)} (P&L {fmt_money(pnl)}, {pnl_pct:+.2f}%)",
     ]
     try:
@@ -143,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Стресс-режим подбора акций: тилт в защитные сектора, дивиденды и низкую бету "
         "(также включается настройкой «stress» в data/profile.json)",
     )
-    parser.add_argument("--version", action="version", version=f"invest-helper {__version__}")
+    parser.add_argument("--version", action="version", version=f"Третья рука {__version__}")
     parser.add_argument(
         "--tax",
         type=int,

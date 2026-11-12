@@ -1,4 +1,4 @@
-# invest-helper
+# Третья рука
 
 Честная бухгалтерия портфеля для ИИС и брокерского счёта Т-Инвестиций — локально,
 без отправки данных третьим лицам.
@@ -6,7 +6,7 @@
 ## Что это
 
 Приложение брокера показывает состояние (сколько денег, какой P&L за период), но не
-отвечает на главный вопрос инвестора — **«что делать и почему»**. invest-helper
+отвечает на главный вопрос инвестора — **«что делать и почему»**. «Третья рука»
 считает то, чего нет в приложении:
 
 - **честный P&L** — берём у брокера (`expected_yield`), а не пересчитываем сами
@@ -34,7 +34,7 @@
 
 ```bash
 git clone <repo-url>
-cd invest-helper
+cd third_hand
 python -m venv .venv
 . .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -94,7 +94,7 @@ python -m src.frontends.mcp
 Пример подключения к Claude Code:
 
 ```bash
-claude mcp add invest-helper -- .venv/bin/python -m src.frontends.mcp
+claude mcp add third-hand -- .venv/bin/python -m src.frontends.mcp
 ```
 
 ## Честность цифр

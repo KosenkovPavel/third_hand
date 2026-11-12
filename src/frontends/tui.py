@@ -42,7 +42,7 @@ def _flags_for(choice: str, console) -> list[str]:
 
 
 def run_tui(parser, console) -> int:
-    console.print("[bold]invest-helper[/] — интерактивный режим")
+    console.print("[bold]Третья рука[/] — интерактивный режим")
 
     setup = connect(console)
     if setup is None:
