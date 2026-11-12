@@ -1,7 +1,8 @@
 """TUI-фасад: полноэкранный интерфейс на Textual (в стиле Claude Code).
 
-Запускается, когда `python main.py` вызван без аргументов. Логотип 🦾 в шапке,
-скроллящийся вывод отчёта в центре, окно ввода внизу, спиннер во время сбора.
+Запускается, когда `python main.py` вызван без аргументов. На старте — крупный
+ASCII-логотип по центру, скроллящийся вывод отчёта в центре, окно ввода внизу,
+спиннер во время сбора.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 from io import StringIO
 
 from rich.console import Console
-from rich.panel import Panel
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Input, RichLog, Static
 
@@ -34,6 +35,20 @@ SECTIONS = {
 
 # Прогресс build_report не должен лезть в stdout (сломает экран Textual).
 NULL_CONSOLE = Console(file=StringIO())
+
+# ASCII-логотип «THIRD HAND» (шрифт pyfiglet «standard»). Кириллицу ASCII-генераторы
+# (figlet/pyfiglet/art) не поддерживают, поэтому крупный логотип — латиницей, а
+# русский бренд «Третья рука» — в подзаголовке под ним. Сгенерировано один раз,
+# чтобы не тащить pyfiglet в зависимости.
+LOGO = r"""
+ _____ _   _ ___ ____  ____    _   _    _    _   _ ____
+|_   _| | | |_ _|  _ \|  _ \  | | | |  / \  | \ | |  _ \
+  | | | |_| || || |_) | | | | | |_| | / _ \ |  \| | | | |
+  | | |  _  || ||  _ <| |_| | |  _  |/ ___ \| |\  | |_| |
+  |_| |_| |_|___|_| \_\____/  |_| |_/_/   \_\_| \_|____/
+""".strip("\n")
+
+LOGO_WIDTH = max(len(line) for line in LOGO.splitlines())
 
 
 class _CaptureConsole(Console):
@@ -94,18 +109,43 @@ class ThirdHandApp(App):
         )
 
     def on_mount(self) -> None:
-        self.title = "🦾 Третья рука"
+        self.title = "Третья рука"
         self.sub_title = self.account.name
         out = self.query_one("#output", RichLog)
-        out.write(
-            Panel(
-                "[bold]Третья рука[/bold] — честная бухгалтерия портфеля.\n\n"
-                "Введи, что показать, например [bold]портфель[/bold] или [bold]ребаланс[/bold].\n"
-                "[dim]Для выхода: «выход»[/dim]",
-                title="🦾 Третья рука",
-                border_style="green",
-            )
+
+        # Центрируем по ширине окна (минус боковой padding RichLog в 1 символ).
+        width = max(LOGO_WIDTH, (self.size.width or 80) - 2)
+        pad = max(0, (width - LOGO_WIDTH) // 2)
+
+        def centered(text: str, visible: int) -> str:
+            return " " * max(0, (width - visible) // 2) + text
+
+        banner = Text()
+        banner.append("\n")
+        for line in LOGO.splitlines():
+            banner.append(" " * pad + line, style="bold")
+            banner.append("\n")
+        banner.append("\n")
+        banner.append(centered("Третья рука", len("Третья рука")), style="bold")
+        banner.append("\n")
+        banner.append(
+            centered("честная бухгалтерия портфеля", len("честная бухгалтерия портфеля")),
+            style="dim",
         )
+        banner.append("\n\n")
+        banner.append(
+            centered("Введи, что показать — например «портфель» или «ребаланс»",
+                     len("Введи, что показать — например «портфель» или «ребаланс»")),
+            style="dim",
+        )
+        banner.append("\n")
+        banner.append(
+            centered("Для выхода: «выход»", len("Для выхода: «выход»")),
+            style="italic dim",
+        )
+        banner.append("\n")
+
+        out.write(banner)
         self.query_one("#input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
