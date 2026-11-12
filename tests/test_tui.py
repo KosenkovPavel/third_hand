@@ -9,7 +9,13 @@ from rich.console import Console
 
 from src.accounting import AccountingReport
 from src.frontends.cli import build_parser
-from src.frontends.tui import BUTTONS, ThirdHandApp, _CaptureConsole
+from src.frontends.tui import (
+    BUTTONS,
+    DETAIL_RENDERERS,
+    SIMPLE_RENDERERS,
+    ThirdHandApp,
+    _CaptureConsole,
+)
 from src.portfolio import Allocation, PortfolioSnapshot, Position
 from src.profile import UserProfile
 from src.report import print_all, print_summary
@@ -123,6 +129,16 @@ def test_buttons_present():
                 assert btn_id in ids
 
     asyncio.run(check())
+
+
+def test_every_button_has_simple_and_detail_renderer():
+    """Каждая кнопка должна иметь и «просто», и «детально» рендерер."""
+    for _btn_id, _label, choice in BUTTONS:
+        assert choice in SIMPLE_RENDERERS, f"нет «просто» для {choice}"
+        assert choice in DETAIL_RENDERERS, f"нет «детально» для {choice}"
+    # секции вне кнопок фолбэчат на полный отчёт, не должны быть в словарях
+    assert "рынок" not in SIMPLE_RENDERERS
+    assert "рынок" not in DETAIL_RENDERERS
 
 
 def test_show_report_renders_into_richlog():

@@ -16,7 +16,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Button, Header, Input, RichLog, Static
 
-from src.report import print_all, print_summary
+from src import report as report_mod
 from src.report_builder import ReportError, build_report
 
 from . import connect
@@ -24,6 +24,7 @@ from .cli import build_parser
 
 SECTIONS = {
     "портфель": [],
+    "иис": [],
     "ребаланс": ["--rebalance"],
     "прогноз": ["--forecast"],
     "риски": ["--risk"],
@@ -41,10 +42,30 @@ SECTIONS = {
 BUTTONS = [
     ("portfolio", "Портфель", "портфель"),
     ("rebalance", "Ребаланс", "ребаланс"),
+    ("iis", "ИИС", "иис"),
     ("forecast", "Прогноз", "прогноз"),
     ("history", "История", "история"),
     ("risk", "Риски", "риски"),
 ]
+
+# Рендереры «просто» и «детально» по секциям. Секции вне кнопок (рынок, календарь,
+# новости, акции, облигации) доступны через поле ввода и рендерятся полным отчётом.
+SIMPLE_RENDERERS = {
+    "портфель": report_mod.print_summary,
+    "иис": report_mod.print_iis_simple,
+    "ребаланс": report_mod.print_rebalance_simple,
+    "прогноз": report_mod.print_forecast_simple,
+    "история": report_mod.print_history_simple,
+    "риски": report_mod.print_risk_simple,
+}
+DETAIL_RENDERERS = {
+    "портфель": report_mod.print_all,
+    "иис": report_mod.print_iis_detail,
+    "ребаланс": report_mod.print_rebalance_detail,
+    "прогноз": report_mod.print_forecast_detail,
+    "история": report_mod.print_history_detail,
+    "риски": report_mod.print_risk_detail,
+}
 
 # Прогресс build_report не должен лезть в stdout (сломает экран Textual).
 NULL_CONSOLE = Console(file=StringIO())
@@ -234,10 +255,9 @@ class ThirdHandApp(App):
         out.clear()
         width = max(80, self.size.width or 80)
         console = _CaptureConsole(width)
-        if not self.detail and self.last_choice == "портфель":
-            print_summary(report, console=console)
-        else:
-            print_all(report, console=console)
+        renderers = DETAIL_RENDERERS if self.detail else SIMPLE_RENDERERS
+        renderer = renderers.get(self.last_choice or "портфель", report_mod.print_all)
+        renderer(report, console=console)
         for renderable in console.renderables:
             out.write(renderable)
         self.query_one("#status", Static).update("")

@@ -1181,3 +1181,410 @@ def print_summary(report: ReportData, console: Console | None = None):
                 )
     for s in signals[:4]:
         console.print(f"[bold yellow]⚠ {s}[/bold yellow]")
+
+
+# ============================================================================
+# Секционные рендереры для TUI: каждая вкладка имеет «просто» (кратко) и
+# «детально» (полная секция) вид. CLI/MCP продолжают использовать print_all.
+# ============================================================================
+
+
+def print_rebalance_simple(report: ReportData, console: Console) -> None:
+    plan = report.rebalance_plan
+    if not plan or not plan.recommendations:
+        console.print("[dim]Нет данных для ребалансировки — задайте целевую структуру в profile.json.[/dim]")
+        return
+    buys = [r for r in plan.recommendations if r.invest_amount > 0]
+    if not buys:
+        console.print("[dim]Портфель близок к цели — докупать пока нечего.[/dim]")
+        return
+    parts = [f"{r.asset_class} — докупить [bold]{_money(r.invest_amount)}[/bold]" for r in buys]
+    console.print(Panel("\n".join(parts), title="Ребаланс", border_style="magenta"))
+    if plan.unallocated > 0:
+        console.print(f"[dim]Остаток сверх цели: {_money(plan.unallocated)}[/dim]")
+
+
+def print_rebalance_detail(report: ReportData, console: Console) -> None:
+    plan = report.rebalance_plan
+    contribution_plan = report.contribution_plan
+    if plan and plan.recommendations:
+        t = Table(title="Ребалансировка", header_style="bold magenta")
+        t.add_column("Класс активов")
+        t.add_column("Сейчас", justify="right")
+        t.add_column("Цель", justify="right")
+        t.add_column("Отклонение", justify="right")
+        t.add_column(f"К покупке {_money(plan.invest_amount)}", justify="right")
+        for r in plan.recommendations:
+            deviation = r.current_pct - r.target_pct
+            style = "red" if deviation > 1 else ("green" if deviation < -1 else "default")
+            invest_str = _money(r.invest_amount) if r.invest_amount > 0 else "—"
+            t.add_row(
+                r.asset_class,
+                f"{r.current_pct:.1f}%",
+                f"{r.target_pct:.0f}%",
+                f"[{style}]{deviation:+.1f}%[/{style}]",
+                invest_str,
+            )
+        budget_sub = (
+            f"Бюджет: остаток на счёте {_money(plan.cash)} + "
+            f"пополнение {_money(plan.contrib)}"
+        )
+        console.print(Panel(t, border_style="magenta", subtitle=budget_sub))
+        if plan.unallocated > 0:
+            console.print(
+                f"[dim]Остаток сверх целевой структуры: {_money(plan.unallocated)} — "
+                f"оставьте на счёте до следующего пополнения[/dim]"
+            )
+    if contribution_plan and contribution_plan.budget > 0:
+        plan_cp = contribution_plan
+        t = Table(title="Виртуальный план пополнения — заявки не отправляются", header_style="bold green")
+        t.add_column("Инструмент")
+        t.add_column("Класс")
+        t.add_column("Цена", justify="right")
+        t.add_column("Лоты", justify="right")
+        t.add_column("Кол-во", justify="right")
+        t.add_column("Сумма", justify="right")
+        t.add_column("Комиссия ~0,3%", justify="right")
+        for item in plan_cp.items:
+            t.add_row(
+                f"[bold]{item.ticker}[/bold] {item.name}",
+                item.asset_class,
+                _money(item.price),
+                f"{item.lots} × {item.lot}",
+                f"{item.quantity:g}",
+                _money(item.amount),
+                _money(item.commission),
+            )
+        subtitle = (
+            f"Бюджет {_money(plan_cp.budget)} | покупки {_money(plan_cp.spent)} | "
+            f"комиссия {_money(plan_cp.commission)} | остаток {_money(plan_cp.unallocated)}"
+        )
+        console.print(Panel(t, border_style="green", subtitle=subtitle))
+        for note in plan_cp.notes:
+            console.print(f"[yellow]{note}[/yellow]")
+
+
+def print_forecast_simple(report: ReportData, console: Console) -> None:
+    forecast_data = report.forecast_data
+    if not forecast_data:
+        console.print("[dim]Нет данных для прогноза.[/dim]")
+        return
+    final = forecast_data.final
+    lines = [
+        f"Через {_years_label(final.years)}: [bold]{_money(final.balance)}[/bold]",
+        f"доходность {forecast_data.annual_return_pct:.0f}% в год",
+    ]
+    if forecast_data.monthly > 0:
+        lines.append(f"пополнение {_money(forecast_data.monthly)}/мес")
+    console.print(Panel("\n".join(lines), title="Прогноз", border_style="green"))
+
+
+def print_forecast_detail(report: ReportData, console: Console) -> None:
+    forecast_data = report.forecast_data
+    scenarios = report.scenarios
+    deposit_forecast = report.deposit_forecast
+    key_rate = report.key_rate
+    if forecast_data:
+        t = Table(title="Прогноз роста портфеля", header_style="bold green")
+        t.add_column("Горизонт")
+        t.add_column("Баланс", justify="right")
+        t.add_column("Вложено", justify="right")
+        t.add_column("Доход", justify="right")
+        if forecast_data.inflation_pct is not None:
+            t.add_column("В сегодняшних деньгах", justify="right")
+        for p in forecast_data.points:
+            row = [
+                _years_label(p.years),
+                _money(p.balance),
+                _money(p.contributed),
+                f"[{'green' if p.profit >= 0 else 'red'}]{_money(p.profit)}[/{'green' if p.profit >= 0 else 'red'}]",
+            ]
+            if forecast_data.inflation_pct is not None:
+                row.append(_money(p.balance_real) if p.balance_real is not None else "—")
+            t.add_row(*row)
+        subtitle = f"Пополнения {_money(forecast_data.monthly)}/мес, доходность {forecast_data.annual_return_pct:.1f}% в год"
+        if forecast_data.annual_deduction > 0:
+            subtitle += (
+                f"; реинвест. вычета ИИС {_money(forecast_data.annual_deduction)}/год"
+                f" → +{_money(forecast_data.final.deduction_gain)} к итогу"
+            )
+        if forecast_data.inflation_pct is not None:
+            subtitle += f"; инфляция {forecast_data.inflation_pct:.0f}% (оценка)"
+        console.print(Panel(t, border_style="green", subtitle=subtitle))
+
+    if scenarios:
+        base = base_scenario(scenarios)
+        spread = scenarios[-1].annual_return_pct - base.annual_return_pct
+        t = Table(title="Сценарии прогноза", header_style="bold green")
+        t.add_column("Горизонт")
+        for s in scenarios:
+            t.add_column(f"{s.label} ({s.annual_return_pct:.0f}%)", justify="right")
+        if base.forecast.inflation_pct is not None:
+            t.add_column("База в сегод. деньгах", justify="right")
+        for i, years in enumerate([p.years for p in base.forecast.points]):
+            row = [_years_label(years)]
+            row += [_money(s.forecast.points[i].balance) for s in scenarios]
+            if base.forecast.inflation_pct is not None:
+                real = base.forecast.points[i].balance_real
+                row.append(_money(real) if real is not None else "—")
+            t.add_row(*row)
+        console.print(Panel(
+            t,
+            border_style="green",
+            subtitle=f"Доходность базового сценария ±{spread:.0f} п.п.; остальные параметры те же",
+        ))
+
+    if forecast_data and deposit_forecast and key_rate is not None:
+        horizon = forecast_data.final.years
+        console.print(
+            f"[dim]Альтернатива: вклад под ключевую ставку ({key_rate:.2f}%) дал бы "
+            f"{_money(deposit_forecast.final.balance)} за {_years_label(horizon)} "
+            f"(против {_money(forecast_data.final.balance)} по базовому сценарию)[/dim]"
+        )
+
+
+def print_history_simple(report: ReportData, console: Console) -> None:
+    points = report.history_points
+    if not points or len(points) < 2:
+        console.print("[dim]Недостаточно истории портфеля.[/dim]")
+        return
+    lines = []
+    if report.twr_pct is not None:
+        lines.append(f"Доходность (TWR): [bold]{report.twr_pct:+.2f}%[/bold]")
+    if report.benchmark_pct is not None:
+        lines.append(f"IMOEX за тот же период: {report.benchmark_pct:+.2f}%")
+    dd = max_drawdown(points, report.history_flows)
+    if dd is not None:
+        lines.append(f"Макс. просадка: {dd[0]:.2f}%")
+    console.print(Panel("\n".join(lines), title="История", border_style="yellow"))
+
+
+def print_history_detail(report: ReportData, console: Console) -> None:
+    history_points = report.history_points
+    history_flows = report.history_flows
+    account_opened = report.account_opened
+    if not history_points or len(history_points) < 2:
+        console.print("[dim]Недостаточно истории портфеля.[/dim]")
+        return
+    show_xirr = False
+    if account_opened is not None:
+        opened = (
+            account_opened
+            if account_opened.tzinfo is not None
+            else account_opened.replace(tzinfo=timezone.utc)
+        )
+        show_xirr = (datetime.now(timezone.utc) - opened) >= timedelta(days=3 * 365)
+
+    t = Table(title="История портфеля", header_style="bold yellow")
+    t.add_column("Дата")
+    t.add_column("Стоимость", justify="right")
+    t.add_column("Вложено", justify="right")
+    t.add_column("Внесено", justify="right")
+    t.add_column("Доход, %", justify="right")
+    for h in history_points:
+        d = (
+            f"[green]+{h.pnl_pct:.2f}%[/green]"
+            if h.pnl_pct >= 0
+            else f"[red]{h.pnl_pct:.2f}%[/red]"
+        )
+        t.add_row(
+            h.date,
+            _money(h.total),
+            _money(h.invested),
+            _money(h.net_contrib) if h.net_contrib is not None else "—",
+            d,
+        )
+    console.print(Panel(t, border_style="yellow"))
+    spark = sparkline(history_points)
+    if spark:
+        console.print(f"[dim]{spark}[/dim]")
+    last = history_points[-1]
+    if last.net_contrib is not None and last.net_contrib > 0:
+        growth = last.total - last.net_contrib
+        growth_pct = growth / last.net_contrib * 100
+        prefix = (
+            f"С даты открытия счёта ({account_opened:%d.%m.%Y})"
+            if account_opened
+            else "За доступную историю"
+        )
+        console.print(
+            f"[dim]{prefix}: чистые взносы {_money(last.net_contrib)} | "
+            f"доход {_money(growth)} ({growth_pct:+.2f}% к взносам)[/dim]"
+        )
+    if report.all_time_benchmark_pct is not None:
+        console.print(
+            f"[dim]IMOEX со дня открытия счёта до {last.date}: "
+            f"{report.all_time_benchmark_pct:+.2f}% (без дивидендов)[/dim]"
+        )
+    if report.index_simulation is not None:
+        simulation = report.index_simulation
+        console.print(
+            f"[dim]Те же взносы в IMOEX: {_money(simulation.final_value)} "
+            f"({simulation.profit_pct:+.2f}% к взносам) | "
+            f"реальный портфель минус симуляция: {_money(simulation.difference)}[/dim]"
+        )
+        console.print("[dim]Симуляция без дивидендов и комиссий; реальные данные не изменены[/dim]")
+    if report.twr_pct is not None:
+        console.print(
+            f"[dim]Ваша доходность (TWR) за {history_points[0].date} — {last.date}: "
+            f"{report.twr_pct:+.2f}%[/dim]"
+        )
+    if report.benchmark_pct is not None:
+        console.print(
+            f"[dim]Индекс МосБиржи (IMOEX, без дивидендов) за тот же период: "
+            f"{report.benchmark_pct:+.2f}%[/dim]"
+        )
+    if report.xirr_pct is not None and show_xirr:
+        console.print(
+            f"[dim]XIRR за всю историю счёта: {report.xirr_pct:+.2f}% годовых[/dim]"
+        )
+    if report.deposit_pct is not None and report.key_rate is not None:
+        console.print(
+            f"[dim]Вклад под ключевую ставку ({report.key_rate:.2f}%) за тот же период: "
+            f"+{report.deposit_pct:.2f}% (простой процент)[/dim]"
+        )
+    dd = max_drawdown(history_points, history_flows)
+    if dd is not None:
+        label = "макс. просадка TWR" if history_flows is not None else "макс. просадка"
+        console.print(f"[dim]Худший момент ({label}): {dd[0]:.2f}% ({dd[1]})[/dim]")
+
+
+def print_risk_simple(report: ReportData, console: Console) -> None:
+    risks = report.risks
+    if not risks or not risks.items:
+        console.print("[dim]Рисков концентрации не найдено.[/dim]")
+        return
+    items = [r for r in risks.items if r.alert] or risks.items
+    lines = [f"{r.name}: [bold red]{r.pct:.1f}%[/bold red]" for r in items[:4]]
+    console.print(Panel("\n".join(lines), title="Риски", border_style="red"))
+
+
+def print_risk_detail(report: ReportData, console: Console) -> None:
+    risks = report.risks
+    if risks and risks.items:
+        t = Table(title="Концентрация и риски", header_style="bold red")
+        t.add_column("Тип")
+        t.add_column("Объект")
+        t.add_column("Сумма", justify="right")
+        t.add_column("Доля", justify="right")
+        for r in risks.items:
+            style = "red" if r.alert else "default"
+            t.add_row(
+                r.kind,
+                f"[{style}]{r.name}[/{style}]",
+                _money(r.amount),
+                f"[{style}]{r.pct:.1f}%[/{style}]",
+            )
+        extra = f"Средний β портфеля: {risks.weighted_beta}" if risks.weighted_beta is not None else None
+        console.print(Panel(t, border_style="red", subtitle=extra))
+
+        if risks.alerts:
+            t = Table(title="Предупреждения", header_style="bold red", show_header=False, box=None)
+            for a in risks.alerts:
+                t.add_row(f"[bold red]⚠ {a}[/bold red]")
+            console.print(Panel(t, border_style="red"))
+
+
+def print_iis_simple(report: ReportData, console: Console) -> None:
+    progress = report.iis_progress
+    info = report.iis_info
+    if progress:
+        ndfl = info.ndfl_rate if info else Decimal("0.13")
+        lines = [
+            f"Внесено за {progress.year}: {_money(progress.contributed)}",
+            f"Осталось до лимита: {_money(progress.remaining)}",
+            f"Можно вернуть ({ndfl:.0%}): [bold green]{_money(progress.missing_return)}[/bold green]",
+        ]
+        console.print(Panel("\n".join(lines), title="ИИС: вычет", border_style="blue"))
+    elif report.iis_years or info:
+        console.print("[dim]Данные ИИС есть — переключите в «детально» для таблицы по годам.[/dim]")
+    else:
+        console.print("[dim]Счёт не ИИС или данных нет.[/dim]")
+
+
+def print_iis_detail(report: ReportData, console: Console) -> None:
+    iis_years = report.iis_years
+    iis_info = report.iis_info
+    iis_progress = report.iis_progress
+    iis_warnings = report.iis_warnings
+    tax_notes = report.tax_notes
+    claim_statuses = report.claim_statuses
+    if iis_years or iis_info:
+        ndfl = iis_info.ndfl_rate if iis_info else Decimal("0.13")
+        title = "ИИС: взносы и налоговый вычет (тип А)"
+        if iis_info:
+            type_name = IIS_TYPE_NAMES.get(iis_info.iis_type, iis_info.iis_type)
+            auto = " [dim](тип определён автоматически)[/dim]" if iis_info.type_auto else ""
+            title = f"{type_name}: взносы и налоговые вычеты{auto}"
+        t = Table(title=title, header_style="bold blue")
+        t.add_column("Год")
+        t.add_column("Внесено", justify="right")
+        t.add_column("В зачёт лимита", justify="right")
+        t.add_column(f"Возврат {ndfl:.0%}", justify="right")
+        for y in iis_years or []:
+            over = " [red]↑ сверх лимита[/red]" if y.over_limit else ""
+            t.add_row(
+                f"{y.year}",
+                _money(y.contributed) + over,
+                _money(y.capped),
+                f"[bold green]{_money(y.potential_return)}[/bold green]",
+            )
+        subtitle = (
+            f"Вычет на взносы: база до {_money(TYPE_A_LIMIT)}/год, "
+            f"возврат до {_money((TYPE_A_LIMIT * ndfl).quantize(Decimal('0.01')))} при ставке {ndfl:.0%}"
+        )
+        if iis_info and iis_info.iis_type == "iis3":
+            subtitle += "; вычет на доход: освобождение до 30 млн ₽ при закрытии после мин. срока (кроме дивидендов/купонов)"
+        console.print(Panel(t, border_style="blue", subtitle=subtitle))
+        if iis_info and iis_info.iis_type == "iis3":
+            term = iis_info.term
+            if term is None:
+                console.print(
+                    "[yellow]Дата открытия ИИС неизвестна — укажите iis.open_date "
+                    "в data/profile.json, чтобы видеть срок владения ИИС-3.[/]"
+                )
+            elif term.expired:
+                console.print(
+                    f"[blue]Минимальный срок владения ИИС-3 ({term.min_years} л.) истёк — "
+                    f"закрытие без потери вычетов.[/]"
+                )
+            else:
+                left = []
+                if term.years_left:
+                    left.append(_years_label(term.years_left))
+                if term.months_left or not left:
+                    left.append(f"{term.months_left} мес.")
+                console.print(
+                    f"[blue]Минимальный срок владения ИИС-3 ({term.min_years} л.) истекает "
+                    f"{term.mature_date:%d.%m.%Y} — осталось {' '.join(left)}[/]"
+                )
+        if tax_notes:
+            for note in tax_notes:
+                console.print(f"[dim]📅 {note}[/dim]")
+        for warning in iis_warnings or []:
+            console.print(f"[bold red]⚠ {warning}[/bold red]")
+        if claim_statuses:
+            console.print("[bold blue]Незаявленные вычеты:[/bold blue]")
+            for cs in claim_statuses:
+                if cs.status == "early":
+                    note = f"заявляется в {cs.year + 1}"
+                elif cs.status == "available":
+                    note = "можно заявить уже сейчас"
+                else:
+                    note = "срок заявления истёк (3 года) — вычет сгорел"
+                line = f"  {cs.year} — {_money(cs.potential_return)} ({note})"
+                style = "bold red" if cs.status == "expired" else "blue"
+                console.print(f"[{style}]{line}[/{style}]")
+
+    if iis_progress:
+        t = Table(title=f"ИИС: прогресс вычета за {iis_progress.year} год", header_style="bold blue")
+        t.add_column("Показатель")
+        t.add_column("Сумма", justify="right")
+        t.add_row("Внесено за год", _money(iis_progress.contributed))
+        t.add_row("Лимит вычета", _money(iis_progress.limit))
+        t.add_row("Осталось до лимита", _money(iis_progress.remaining))
+        t.add_row(
+            f"Недобрано вычета ({(iis_info.ndfl_rate if iis_info else Decimal('0.13')):.0%})",
+            f"[bold green]{_money(iis_progress.missing_return)}[/bold green]",
+        )
+        console.print(Panel(t, border_style="blue"))
