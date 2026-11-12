@@ -27,6 +27,7 @@ pytest.importorskip("textual")
 class _FakeAccount:
     id = "test"
     name = "ИИС"
+    account_type = "tinkoff"
 
 
 def _position(ticker: str, amount: Decimal, typ: str = "share") -> Position:
@@ -141,6 +142,28 @@ def test_every_button_has_simple_and_detail_renderer():
     assert "рынок" not in DETAIL_RENDERERS
 
 
+def test_build_section_maps_russian_keys(monkeypatch):
+    """Регрессия: build_section принимает русские ключи SECTIONS, а не английские.
+
+    Раньше ``section == "rebalance"`` не совпадало с «ребаланс» и всё
+    проваливалось в ``return base`` — секция молча оставалась пустой.
+    """
+    import src.report_builder as rb
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(rb, "calculate_rebalance", lambda *a, **k: SimpleNamespace(recommendations=[]))
+    monkeypatch.setattr(rb, "load_purchase_candidates", lambda *a, **k: [])
+    monkeypatch.setattr(rb, "build_contribution_plan", lambda *a, **k: "CP")
+
+    args = build_parser().parse_args(["--rebalance"])
+    result = rb.build_section(
+        _full_report(), "ребаланс", object(), _FakeAccount(), UserProfile(), args, None
+    )
+    # ветка «ребаланс» отработала (не провалилась в return base)
+    assert result.rebalance_plan is not None
+    assert result.contribution_plan == "CP"
+
+
 def test_show_report_renders_into_richlog():
     async def check() -> None:
         async with _make_app().run_test() as pilot:
@@ -174,6 +197,26 @@ def test_mode_toggle_switches_summary_and_detail():
             detail = " ".join(str(s) for s in app.query_one("#output").lines)
             assert "Бухгалтерия за период" in detail
             assert app.sub_title.endswith("детально")
+
+    asyncio.run(check())
+
+
+def test_preload_shows_summary_on_start(monkeypatch):
+    """При запуске база грузится фоном, и сводка появляется без кликов."""
+    monkeypatch.setattr(
+        "src.frontends.tui.build_report",
+        lambda client, account, args, profile, console: _full_report(),
+    )
+
+    async def check() -> None:
+        async with _make_app().run_test() as pilot:
+            for _ in range(200):
+                await asyncio.sleep(0.02)
+                if pilot.app.last_choice == "портфель":
+                    break
+            assert pilot.app.last_choice == "портфель"
+            text = " ".join(str(s) for s in pilot.app.query_one("#output").lines)
+            assert "Стоимость" in text
 
     asyncio.run(check())
 

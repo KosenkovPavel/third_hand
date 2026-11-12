@@ -7,6 +7,8 @@ ASCII-логотип по центру, скроллящийся вывод от
 
 from __future__ import annotations
 
+import threading
+import time
 from functools import partial
 from io import StringIO
 
@@ -17,7 +19,7 @@ from textual.containers import Horizontal
 from textual.widgets import Button, Header, Input, RichLog, Static
 
 from src import report as report_mod
-from src.report_builder import ReportError, build_report
+from src.report_builder import ReportError, build_report, build_section
 
 from . import connect
 from .cli import build_parser
@@ -66,6 +68,9 @@ DETAIL_RENDERERS = {
     "история": report_mod.print_history_detail,
     "риски": report_mod.print_risk_detail,
 }
+
+# База (сеть) обновляется фоново раз в N секунд и считается свежей столько же.
+BASE_REFRESH_SECONDS = 60.0
 
 # Прогресс build_report не должен лезть в stdout (сломает экран Textual).
 NULL_CONSOLE = Console(file=StringIO())
@@ -140,6 +145,10 @@ class ThirdHandApp(App):
         self.detail = False          # False — «просто», True — «детально»
         self.last_report = None
         self.last_choice: str | None = None
+        self.base_report = None      # кэш базы (сеть собирается один раз)
+        self.base_built_at = 0.0
+        self._base_lock = threading.Lock()
+        self._refresh_in_progress = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -196,6 +205,11 @@ class ThirdHandApp(App):
         out.write(banner)
         self.query_one("#input", Input).focus()
 
+        # Предзагрузка базы при старте + фоновое обновление раз в N секунд,
+        # чтобы внутри всё летало и не нужно было жать кнопки ради свежих данных.
+        self._start_background_load()
+        self.set_interval(BASE_REFRESH_SECONDS, self._start_background_load)
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         choice = event.value.strip().lower()
         event.input.value = ""
@@ -231,16 +245,74 @@ class ThirdHandApp(App):
         if self.last_report is not None:
             self._render_report(self.last_report)
 
+    def _start_background_load(self) -> None:
+        """Фоново (в воркере) обновляет базу — не блокирует UI и не спамит, если уже идёт."""
+        if self._refresh_in_progress:
+            return
+        self._refresh_in_progress = True
+        if self.base_report is None:
+            self.query_one("#status", Static).update("⟳ Загружаю портфель…")
+        self.run_worker(self._load_base_worker, thread=True)
+
+    def _load_base_worker(self) -> None:
+        try:
+            with self._base_lock:
+                args = self.parser.parse_args([])
+                base = build_report(self.client, self.account, args, self.profile, NULL_CONSOLE)
+                self.base_report = base
+                self.base_built_at = time.monotonic()
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self._on_load_done, None, str(exc))
+            return
+        self.call_from_thread(self._on_load_done, base, None)
+
+    def _on_load_done(self, base, error: str | None) -> None:
+        self._refresh_in_progress = False
+        if error is not None:
+            if self.last_choice is None:
+                self.query_one("#status", Static).update("[red]Не удалось загрузить данные[/red]")
+            return
+        # При первом старте показываем сводку; если смотрим базу — обновляем её.
+        if self.last_choice is None:
+            self.last_choice = "портфель"
+            self._show_report(base)
+        elif self.last_choice in ("портфель", "иис"):
+            self._show_report(base)
+        else:
+            self.query_one("#status", Static).update("")
+
     def _run(self, choice: str) -> None:
         self.last_choice = choice
         self.query_one("#status", Static).update(f"⟳ Собираю «{choice}»…")
         # run_worker вызывает work() без аргументов — оборачиваем в partial.
         self.run_worker(partial(self._build, choice), thread=True)
 
+    def _get_base(self):
+        """База (сеть) собирается один раз и живёт ``BASE_REFRESH_SECONDS``."""
+        now = time.monotonic()
+        if self.base_report is not None and now - self.base_built_at < BASE_REFRESH_SECONDS:
+            return self.base_report
+        with self._base_lock:
+            now = time.monotonic()
+            if self.base_report is not None and now - self.base_built_at < BASE_REFRESH_SECONDS:
+                return self.base_report
+            args = self.parser.parse_args([])
+            self.base_report = build_report(
+                self.client, self.account, args, self.profile, NULL_CONSOLE
+            )
+            self.base_built_at = time.monotonic()
+            return self.base_report
+
     def _build(self, choice: str) -> None:
         args = self.parser.parse_args(SECTIONS[choice])
         try:
-            report = build_report(self.client, self.account, args, self.profile, NULL_CONSOLE)
+            base = self._get_base()
+            if choice in ("портфель", "иис"):
+                report = base
+            else:
+                report = build_section(
+                    base, choice, self.client, self.account, self.profile, args, NULL_CONSOLE
+                )
         except ReportError as exc:
             self.call_from_thread(self._show_error, str(exc))
             return
