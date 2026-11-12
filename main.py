@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+
+# Вендоренный SDK Т-Инвестиций (нет на PyPI) — подключаем из vendor/.
+sys.path.insert(0, str(Path(__file__).parent / "vendor"))
 
 from rich.console import Console
 
