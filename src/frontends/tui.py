@@ -69,8 +69,8 @@ DETAIL_RENDERERS = {
     "риски": report_mod.print_risk_detail,
 }
 
-# База (сеть) считается свежей столько секунд — дальше пересобирается заново.
-BASE_TTL_SECONDS = 60.0
+# База (сеть) обновляется фоново раз в N секунд и считается свежей столько же.
+BASE_REFRESH_SECONDS = 60.0
 
 # Прогресс build_report не должен лезть в stdout (сломает экран Textual).
 NULL_CONSOLE = Console(file=StringIO())
@@ -148,6 +148,7 @@ class ThirdHandApp(App):
         self.base_report = None      # кэш базы (сеть собирается один раз)
         self.base_built_at = 0.0
         self._base_lock = threading.Lock()
+        self._refresh_in_progress = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -204,6 +205,11 @@ class ThirdHandApp(App):
         out.write(banner)
         self.query_one("#input", Input).focus()
 
+        # Предзагрузка базы при старте + фоновое обновление раз в N секунд,
+        # чтобы внутри всё летало и не нужно было жать кнопки ради свежих данных.
+        self._start_background_load()
+        self.set_interval(BASE_REFRESH_SECONDS, self._start_background_load)
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         choice = event.value.strip().lower()
         event.input.value = ""
@@ -239,6 +245,42 @@ class ThirdHandApp(App):
         if self.last_report is not None:
             self._render_report(self.last_report)
 
+    def _start_background_load(self) -> None:
+        """Фоново (в воркере) обновляет базу — не блокирует UI и не спамит, если уже идёт."""
+        if self._refresh_in_progress:
+            return
+        self._refresh_in_progress = True
+        if self.base_report is None:
+            self.query_one("#status", Static).update("⟳ Загружаю портфель…")
+        self.run_worker(self._load_base_worker, thread=True)
+
+    def _load_base_worker(self) -> None:
+        try:
+            with self._base_lock:
+                args = self.parser.parse_args([])
+                base = build_report(self.client, self.account, args, self.profile, NULL_CONSOLE)
+                self.base_report = base
+                self.base_built_at = time.monotonic()
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self._on_load_done, None, str(exc))
+            return
+        self.call_from_thread(self._on_load_done, base, None)
+
+    def _on_load_done(self, base, error: str | None) -> None:
+        self._refresh_in_progress = False
+        if error is not None:
+            if self.last_choice is None:
+                self.query_one("#status", Static).update("[red]Не удалось загрузить данные[/red]")
+            return
+        # При первом старте показываем сводку; если смотрим базу — обновляем её.
+        if self.last_choice is None:
+            self.last_choice = "портфель"
+            self._show_report(base)
+        elif self.last_choice in ("портфель", "иис"):
+            self._show_report(base)
+        else:
+            self.query_one("#status", Static).update("")
+
     def _run(self, choice: str) -> None:
         self.last_choice = choice
         self.query_one("#status", Static).update(f"⟳ Собираю «{choice}»…")
@@ -246,13 +288,13 @@ class ThirdHandApp(App):
         self.run_worker(partial(self._build, choice), thread=True)
 
     def _get_base(self):
-        """База (сеть) собирается один раз и живёт ``BASE_TTL_SECONDS``."""
+        """База (сеть) собирается один раз и живёт ``BASE_REFRESH_SECONDS``."""
         now = time.monotonic()
-        if self.base_report is not None and now - self.base_built_at < BASE_TTL_SECONDS:
+        if self.base_report is not None and now - self.base_built_at < BASE_REFRESH_SECONDS:
             return self.base_report
         with self._base_lock:
             now = time.monotonic()
-            if self.base_report is not None and now - self.base_built_at < BASE_TTL_SECONDS:
+            if self.base_report is not None and now - self.base_built_at < BASE_REFRESH_SECONDS:
                 return self.base_report
             args = self.parser.parse_args([])
             self.base_report = build_report(

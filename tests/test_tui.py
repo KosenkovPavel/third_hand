@@ -201,6 +201,26 @@ def test_mode_toggle_switches_summary_and_detail():
     asyncio.run(check())
 
 
+def test_preload_shows_summary_on_start(monkeypatch):
+    """При запуске база грузится фоном, и сводка появляется без кликов."""
+    monkeypatch.setattr(
+        "src.frontends.tui.build_report",
+        lambda client, account, args, profile, console: _full_report(),
+    )
+
+    async def check() -> None:
+        async with _make_app().run_test() as pilot:
+            for _ in range(200):
+                await asyncio.sleep(0.02)
+                if pilot.app.last_choice == "портфель":
+                    break
+            assert pilot.app.last_choice == "портфель"
+            text = " ".join(str(s) for s in pilot.app.query_one("#output").lines)
+            assert "Стоимость" in text
+
+    asyncio.run(check())
+
+
 def test_run_section_collects_in_worker_and_renders(monkeypatch):
     """Регрессия: run_worker вызывает _build без аргументов — обёртка partial.
 
