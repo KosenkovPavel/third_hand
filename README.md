@@ -1,9 +1,18 @@
-# Третья рука
+<div align="center">
 
-Честная бухгалтерия портфеля для ИИС и брокерского счёта Т-Инвестиций — локально,
-без отправки данных третьим лицам.
+# 🦾 Третья рука
 
-## Что это
+**Честная бухгалтерия портфеля** для ИИС и брокерского счёта Т-Инвестиций —
+локально, без отправки данных третьим лицам.
+
+[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-141%20passed-brightgreen?style=for-the-badge)](#тесты)
+[![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.5.0-blue?style=for-the-badge)](https://github.com/KosenkovPavel/third_hand)
+
+</div>
+
+## 💡 Что это
 
 Приложение брокера показывает состояние (сколько денег, какой P&L за период), но не
 отвечает на главный вопрос инвестора — **«что делать и почему»**. «Третья рука»
@@ -17,7 +26,7 @@
 - **план ребалансировки** — что докупить/продать под целевую структуру, по лотам;
 - **прогнозы** — сложный процент, три сценария, траектория к цели.
 
-## Три интерфейса — одно ядро
+## 🖥️ Три интерфейса — одно ядро
 
 Все фасады строят один и тот же отчёт (`build_report()` → `ReportData`), а рендерят
 его по-разному: rich-текст для терминала, JSON для агентов.
@@ -28,12 +37,12 @@
 | **TUI** | `python main.py` (без флагов) | человек без агента |
 | **MCP** | `python -m src.frontends.mcp` | AI-агенты |
 
-## Установка
+## 📦 Установка
 
 Требуется Python 3.12+.
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/KosenkovPavel/third_hand.git
 cd third_hand
 python -m venv .venv
 . .venv/bin/activate          # Windows: .venv\Scripts\activate
@@ -51,36 +60,24 @@ ACCOUNT_ID=id_счёта
 Токен выдаётся в настройках Т-Инвестиций (раздел «Разработчикам»). Если `ACCOUNT_ID`
 пуст — список счетов покажет `python main.py --account`.
 
-## Использование
-
-### CLI
+## 🚀 Быстрый старт
 
 ```bash
-python main.py                          # базовый отчёт
+python main.py                          # TUI — диалог-«окошко» (без флагов)
 python main.py --rebalance              # ребалансировка под цель из профиля
 python main.py --rebalance '{"Акции": 60, "Облигации": 40}' --invest 10000
 python main.py --forecast --risk --market
-python main.py --history --save         # история + сохранить снимок
 python main.py --help                   # все флаги
 ```
 
-### TUI
-
-Запусти `python main.py` **без аргументов** — откроется диалог-«окошко», где
-пользователь выбирает раздел и вводит ответы:
-
-```
-Что показать? [портфель/ребаланс/прогноз/риски/рынок/история/календарь/новости/акции/облигации]:
-```
-
-### MCP
+## 🤖 MCP-сервер (для агентов)
 
 ```bash
 python -m src.frontends.mcp
 ```
 
-Сервер отдаёт AI-агенту готовые вычисления (JSON), а не сырые данные — их даёт
-официальный T-Invest MCP. Инструменты:
+Сервер отдаёт агенту готовые вычисления (JSON), а не сырые данные — их даёт
+официальный T-Invest MCP. Агент рассуждает, инструмент считает.
 
 | Инструмент | Что отдаёт |
 |-----------|-----------|
@@ -91,13 +88,11 @@ python -m src.frontends.mcp
 | `forecast` | прогноз сценариев |
 | `tax_report` | справка 3-НДФЛ за год |
 
-Пример подключения к Claude Code:
-
 ```bash
 claude mcp add third-hand -- .venv/bin/python -m src.frontends.mcp
 ```
 
-## Честность цифр
+## 🛡️ Честность цифр
 
 Ключевой принцип: **агент и наивный код не должны считать деньги.** Поэтому:
 
@@ -106,7 +101,7 @@ claude mcp add third-hand -- .venv/bin/python -m src.frontends.mcp
   коротком горизонте она волатильна и обманчива;
 - деньги — только `Decimal`, никогда `float`.
 
-## Тесты
+## 🧪 Тесты
 
 ```bash
 pytest -q
@@ -114,7 +109,7 @@ pytest -q
 
 Тесты идут без сети — все обращения к брокеру через заглушки.
 
-## Структура
+## 📁 Структура
 
 ```
 src/
@@ -128,6 +123,6 @@ tests/            # юнит-тесты без сети
 
 Подробнее об архитектуре и решениях — в вики репозитория.
 
-## Лицензия
+## 📄 Лицензия
 
 [MIT](LICENSE)
