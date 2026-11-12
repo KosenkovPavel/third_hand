@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import json
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import timedelta, datetime, timezone
 from decimal import Decimal
 
@@ -69,24 +71,47 @@ def build_report(
 
     console.print("Собираю портфель и операции...")
 
-    snapshot = client.snapshot(account_id)
-
     to = datetime.now(timezone.utc)
     from_ = to - timedelta(days=args.history_days)
-    accountant = Accountant(client, account_id)
-    acct = accountant.report(from_=from_, to=to)
-
-    # Для XIRR и «внесено/рост» — операции за всю жизнь счёта, если дата открытия известна
-    acct_full = acct
-    full_window = True
     opened = account.opened_date
-    if opened and opened < from_:
+    need_full_window = bool(opened and opened < from_)
+
+    # Независимые сетевые вызовы базы — параллельно, чтобы не ждать их по очереди
+    # (gRPC-канал потокобезопасен, каждый вызов — свой объект Accountant).
+    def _snapshot():
+        return client.snapshot(account_id)
+
+    def _operations(window_from: datetime):
+        return Accountant(client, account_id).report(from_=window_from, to=to)
+
+    tasks = {
+        "snapshot": _snapshot,
+        "acct": lambda: _operations(from_),
+        "key_rate": cbr_key_rate,
+        "sectors": lambda: load_sectors(client),
+        "usd_rub": client.usd_rub,
+        "rgbi": client.rgbi,
+    }
+    if need_full_window:
+        tasks["acct_full"] = lambda: _operations(opened)
+
+    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+        futures = {name: pool.submit(fn) for name, fn in tasks.items()}
+        snapshot = futures["snapshot"].result()
+        acct = futures["acct"].result()
+        cbr_rate = futures["key_rate"].result()
+        sector_by_uid = futures["sectors"].result()
+        usdrub = futures["usd_rub"].result()
+        rgbi = futures["rgbi"].result()
+
+    # Для XIRR и «внесено/рост» — операции за всю жизнь счёта, если дата открытия известна.
+    acct_full = acct
+    full_window = opened is not None
+    if need_full_window:
         try:
-            acct_full = accountant.report(from_=opened, to=to)
+            acct_full = futures["acct_full"].result()
         except Exception:  # noqa: BLE001
             full_window = False
-    elif not opened:
-        full_window = False
     if not full_window:
         console.print(
             f"[dim]Полная история операций недоступна — XIRR, «внесено/рост» и взносы ИИС "
@@ -96,7 +121,6 @@ def build_report(
     iis_info = resolve_iis(profile.iis, account.opened_date, is_iis)
     ndfl_rate = iis_info.ndfl_rate if iis_info else (profile.iis.ndfl_rate or DEFAULT_NDFL_RATE)
     stress_mode = args.stress or profile.stress
-    cbr_rate = cbr_key_rate()
 
     if args.rebalance == "__profile__":
         args.rebalance = str({k: float(v) for k, v in profile.target.items()})
@@ -145,7 +169,6 @@ def build_report(
             raise ReportError(f"Ошибка в --forecast: {exc}") from exc
 
     risk_report = None
-    sector_by_uid = load_sectors(client)  # uid → сектор: для --risk и сигналов по лимитам
     if not sector_by_uid:
         console.print(
             "[dim]Карта секторов недоступна — секторные лимиты и концентрация по секторам не проверяются.[/dim]"
@@ -367,9 +390,6 @@ def build_report(
     # Общий доход и разбивка на реализованный/нереализованный P&L
     return_breakdown = acct_full.return_breakdown(snapshot.total, snapshot.total_pnl)
 
-    usdrub = client.usd_rub()
-    rgbi = client.rgbi()
-
     goal_statuses = []
     if profile.goals:
         try:
@@ -465,3 +485,132 @@ def build_report(
         deposit_pct=deposit_pct,
         data_warnings=data_warnings,
     )
+
+
+def build_section(
+    base: ReportData,
+    section: str,
+    client,
+    account,
+    profile,
+    args,
+    console: Console,
+) -> ReportData:
+    """Достраивает одну секцию поверх закэшированной базы — без повторного
+    сетевого сбора базы (snapshot/операции/аналитика/макро уже в ``base``).
+
+    Возвращает новую ``ReportData`` (база + секция). ``section`` — ключ из
+    ``SECTIONS`` в tui.py: «ребаланс», «прогноз», «риски», «история».
+    «портфель» и «иис» возвращают базу как есть (всё уже посчитано).
+    """
+    snapshot = base.snapshot
+    is_iis = account.account_type == ACCOUNT_TYPE_IIS
+    reinvest = args.reinvest_deduction or is_iis
+    monthly = base.acct.avg_monthly_inflow() or profile.monthly_total()
+    deduction_year = annual_deduction(monthly, rate=base.ndfl_rate) if reinvest else Decimal("0")
+    issues: list[str] = []
+
+    if section == "ребаланс":
+        if args.rebalance == "__profile__":
+            target = dict(profile.target)
+        else:
+            target_raw = ast.literal_eval(args.rebalance)
+            target = {str(k): Decimal(str(v)) for k, v in target_raw.items()}
+        if abs(sum(target.values()) - Decimal("100")) > Decimal("0.01"):
+            raise ReportError("Сумма целевых долей должна быть 100%.")
+        buying_power = snapshot.cash + args.invest
+        rebalance_plan = calculate_rebalance(
+            snapshot,
+            target,
+            invest_amount=buying_power,
+            cash=snapshot.cash,
+            contrib=args.invest,
+        )
+        candidates = load_purchase_candidates(
+            client, snapshot, base.recommendations, base.sector_by_uid, issues=issues
+        )
+        contribution_plan = build_contribution_plan(
+            snapshot,
+            candidates,
+            {r.asset_class: r.invest_amount for r in rebalance_plan.recommendations},
+            budget=buying_power,
+            contribution=args.invest,
+            rules=profile.rules,
+            commission_pct=profile.commission_pct,
+            sector_by_uid=base.sector_by_uid,
+        )
+        return replace(base, rebalance_plan=rebalance_plan, contribution_plan=contribution_plan)
+
+    if section == "прогноз":
+        forecast_data = forecast(
+            snapshot,
+            monthly=monthly,
+            annual_return_pct=args.annual_return,
+            annual_deduction=deduction_year,
+            inflation_pct=profile.inflation_pct,
+        )
+        scenarios = forecast_scenarios(
+            snapshot,
+            monthly=monthly,
+            annual_return_pct=args.annual_return,
+            annual_deduction=deduction_year,
+            inflation_pct=profile.inflation_pct,
+        )
+        deposit_forecast = None
+        if base.key_rate is not None:
+            deposit_forecast = forecast(snapshot, monthly=monthly, annual_return_pct=base.key_rate)
+        return replace(
+            base,
+            forecast_data=forecast_data,
+            scenarios=scenarios,
+            deposit_forecast=deposit_forecast,
+        )
+
+    if section == "риски":
+        risk_report = calculate_risks(
+            snapshot,
+            sector_by_uid=base.sector_by_uid,
+            beta_by_ticker={r.ticker: r.beta for r in base.recommendations},
+        )
+        return replace(base, risks=risk_report)
+
+    if section == "история":
+        history_points = load_history()
+        if not history_points:
+            return replace(base, history_points=history_points)
+        twr_pct = time_weighted_return(history_points, base.history_flows)
+        benchmark_pct = client.imoex_return(
+            history_points[0].date, history_points[-1].date, issues=issues
+        )
+        all_time_benchmark_pct = None
+        if base.account_opened:
+            all_time_benchmark_pct = client.imoex_return(
+                base.account_opened.date().isoformat(), history_points[-1].date, issues=issues
+            )
+        days = (
+            datetime.fromisoformat(history_points[-1].date)
+            - datetime.fromisoformat(history_points[0].date)
+        ).days
+        deposit_pct = None
+        if days > 0 and base.key_rate is not None:
+            deposit_pct = deposit_return_pct(base.key_rate, days)
+        index_simulation = simulate_index_contributions(
+            client, base.acct_full.ops, snapshot.total,
+            end_date=datetime.now(timezone.utc).date(), issues=issues,
+        )
+        recommendation_entries = load_recommendations()
+        recommendation_outcomes = evaluate_recommendations(client, recommendation_entries, issues=issues)
+        return replace(
+            base,
+            history_points=history_points,
+            twr_pct=twr_pct,
+            benchmark_pct=benchmark_pct,
+            all_time_benchmark_pct=all_time_benchmark_pct,
+            deposit_pct=deposit_pct,
+            index_simulation=index_simulation,
+            recommendation_entries_count=len(recommendation_entries),
+            recommendation_outcomes=recommendation_outcomes,
+        )
+
+    # «портфель» / «иис» — всё уже в базе
+    return base

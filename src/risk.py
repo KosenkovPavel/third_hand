@@ -124,13 +124,22 @@ class RiskReport:
     count_sectors: int = 0
 
 
+_sectors_cache: dict[str, str] | None = None
+
+
 def load_sectors(client: TinkoffClient) -> dict[str, str]:
-    """uid инструмента → сектор. Возвращает пустой dict при ошибке."""
+    """uid инструмента → сектор. Статичная карта — кэшируем, чтобы не тянуть
+    ``get_shares()`` на каждую сборку. При ошибке возвращаем пустой dict без
+    кэширования, чтобы следующая сборка попробовала снова."""
+    global _sectors_cache
+    if _sectors_cache is not None:
+        return _sectors_cache
     try:
         resp = client.get_shares()
-        return {s.uid: s.sector for s in resp.instruments if s.sector}
+        _sectors_cache = {s.uid: s.sector for s in resp.instruments if s.sector}
     except Exception:
         return {}
+    return _sectors_cache
 
 
 def calculate_risks(

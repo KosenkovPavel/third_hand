@@ -7,6 +7,8 @@ ASCII-логотип по центру, скроллящийся вывод от
 
 from __future__ import annotations
 
+import threading
+import time
 from functools import partial
 from io import StringIO
 
@@ -17,7 +19,7 @@ from textual.containers import Horizontal
 from textual.widgets import Button, Header, Input, RichLog, Static
 
 from src import report as report_mod
-from src.report_builder import ReportError, build_report
+from src.report_builder import ReportError, build_report, build_section
 
 from . import connect
 from .cli import build_parser
@@ -66,6 +68,9 @@ DETAIL_RENDERERS = {
     "история": report_mod.print_history_detail,
     "риски": report_mod.print_risk_detail,
 }
+
+# База (сеть) считается свежей столько секунд — дальше пересобирается заново.
+BASE_TTL_SECONDS = 60.0
 
 # Прогресс build_report не должен лезть в stdout (сломает экран Textual).
 NULL_CONSOLE = Console(file=StringIO())
@@ -140,6 +145,9 @@ class ThirdHandApp(App):
         self.detail = False          # False — «просто», True — «детально»
         self.last_report = None
         self.last_choice: str | None = None
+        self.base_report = None      # кэш базы (сеть собирается один раз)
+        self.base_built_at = 0.0
+        self._base_lock = threading.Lock()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -149,6 +157,7 @@ class ThirdHandApp(App):
             for btn_id, label, _choice in BUTTONS:
                 yield Button(label, id=btn_id)
             yield Button("Детально", id="btn-mode", variant="primary")
+            yield Button("Обновить", id="btn-refresh")
         yield Input(
             placeholder=(
                 "или напиши: рынок · календарь · новости · акции · облигации · выход"
@@ -214,6 +223,9 @@ class ThirdHandApp(App):
         if button_id == "btn-mode":
             self._toggle_mode()
             return
+        if button_id == "btn-refresh":
+            self._refresh()
+            return
         for btn_id, _label, choice in BUTTONS:
             if btn_id == button_id:
                 self._run(choice)
@@ -237,10 +249,39 @@ class ThirdHandApp(App):
         # run_worker вызывает work() без аргументов — оборачиваем в partial.
         self.run_worker(partial(self._build, choice), thread=True)
 
+    def _refresh(self) -> None:
+        """Сбрасывает кэш базы и пересобирает текущую секцию заново."""
+        with self._base_lock:
+            self.base_report = None
+            self.base_built_at = 0.0
+        self._run(self.last_choice or "портфель")
+
+    def _get_base(self):
+        """База (сеть) собирается один раз и живёт ``BASE_TTL_SECONDS``."""
+        now = time.monotonic()
+        if self.base_report is not None and now - self.base_built_at < BASE_TTL_SECONDS:
+            return self.base_report
+        with self._base_lock:
+            now = time.monotonic()
+            if self.base_report is not None and now - self.base_built_at < BASE_TTL_SECONDS:
+                return self.base_report
+            args = self.parser.parse_args([])
+            self.base_report = build_report(
+                self.client, self.account, args, self.profile, NULL_CONSOLE
+            )
+            self.base_built_at = time.monotonic()
+            return self.base_report
+
     def _build(self, choice: str) -> None:
         args = self.parser.parse_args(SECTIONS[choice])
         try:
-            report = build_report(self.client, self.account, args, self.profile, NULL_CONSOLE)
+            base = self._get_base()
+            if choice in ("портфель", "иис"):
+                report = base
+            else:
+                report = build_section(
+                    base, choice, self.client, self.account, self.profile, args, NULL_CONSOLE
+                )
         except ReportError as exc:
             self.call_from_thread(self._show_error, str(exc))
             return
