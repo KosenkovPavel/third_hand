@@ -1095,3 +1095,89 @@ def print_all(report: ReportData, console: Console | None = None):
         for s in signals:
             t.add_row(f"[bold yellow]⚠ {s}[/bold yellow]")
         console.print(Panel(t, border_style="yellow"))
+
+
+def _bar(pct: Decimal, width: int = 20) -> str:
+    """Текстовая полоска-бар: ████░░░░ по доле 0–100%."""
+    pct = max(Decimal("0"), min(Decimal("100"), pct))
+    filled = round(float(pct) / 100.0 * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+def print_summary(report: ReportData, console: Console | None = None):
+    """Краткая сводка портфеля (режим «просто» в TUI).
+
+    Только главное: стоимость и P&L, структура с барами, крупнейшие позиции,
+    несколько предупреждений. Полный дамп таблиц — в ``print_all``.
+    """
+    console = console or Console()
+    snapshot = report.snapshot
+    profile = report.profile
+
+    # --- Главные цифры ---
+    head = Table(show_header=False, box=None, title="Портфель", title_justify="left")
+    head.add_column("Показатель", style="bold cyan")
+    head.add_column("Значение", justify="right")
+    head.add_row("Стоимость", _money(snapshot.total))
+    head.add_row("Деньги на счету", _money(snapshot.cash))
+    pnl = snapshot.total_pnl
+    pnl_color = "red" if pnl < 0 else "green"
+    yield_pct = snapshot.total_yield_pct or (
+        pnl / snapshot.invested * 100 if snapshot.invested else None
+    )
+    pnl_text = f"[{pnl_color}]{_money(pnl)}[/{pnl_color}]"
+    if yield_pct is not None:
+        pnl_text += f"  ({_pct(yield_pct)})"
+    head.add_row("P&L", pnl_text)
+    console.print(Panel(head, border_style="green"))
+
+    # --- Структура ---
+    if snapshot.allocation:
+        t = Table(show_header=False, box=None, title="Структура", title_justify="left")
+        t.add_column("Класс")
+        t.add_column("Доля", justify="right")
+        t.add_column("")
+        t.add_column("Цель", justify="right", style="dim")
+        for a in snapshot.allocation:
+            share = a.amount / snapshot.total * 100 if snapshot.total else Decimal("0")
+            target = profile.target.get(a.asset_class)
+            t.add_row(
+                a.asset_class,
+                f"{share:.1f}%",
+                _bar(share),
+                f"{target:.0f}%" if target is not None else "",
+            )
+        console.print(Panel(t, border_style="magenta"))
+
+    # --- Крупнейшие позиции ---
+    top = sorted(snapshot.positions, key=lambda p: -p.amount)[:5]
+    if top:
+        t = Table(show_header=False, box=None, title="Крупнейшие позиции", title_justify="left")
+        t.add_column("Инструмент")
+        t.add_column("Доля", justify="right")
+        t.add_column("P&L", justify="right")
+        for p in top:
+            share = p.amount / snapshot.total * 100 if snapshot.total else Decimal("0")
+            color = "red" if p.pnl < 0 else "green"
+            t.add_row(
+                f"[bold]{p.ticker}[/bold]",
+                f"{share:.1f}%",
+                f"[{color}]{_money(p.pnl)}[/{color}]",
+            )
+        console.print(Panel(t, border_style="yellow"))
+
+    # --- Предупреждения ---
+    signals: list[str] = list(rule_signals(snapshot, profile.rules, report.sector_by_uid))
+    if snapshot.total:
+        actual = {a.asset_class: a.amount for a in snapshot.allocation}
+        for cls in set(actual) | set(profile.target):
+            actual_pct = actual.get(cls, Decimal("0")) / snapshot.total * 100
+            target_pct = profile.target.get(cls, Decimal("0"))
+            dev = actual_pct - target_pct
+            if abs(dev) > SIGNAL_DEVIATION_PP:
+                signals.append(
+                    f"Доля «{cls}» {actual_pct:.1f}% при цели {target_pct:.0f}% "
+                    f"(отклонение {dev:+.1f} п.п.) — пора ребалансировать"
+                )
+    for s in signals[:4]:
+        console.print(f"[bold yellow]⚠ {s}[/bold yellow]")

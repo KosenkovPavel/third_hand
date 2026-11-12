@@ -13,9 +13,10 @@ from io import StringIO
 from rich.console import Console
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Input, RichLog, Static
+from textual.containers import Horizontal
+from textual.widgets import Button, Header, Input, RichLog, Static
 
-from src.report import print_all
+from src.report import print_all, print_summary
 from src.report_builder import ReportError, build_report
 
 from . import connect
@@ -33,6 +34,17 @@ SECTIONS = {
     "акции": ["--picks", "{}"],
     "облигации": ["--bonds", "{}"],
 }
+
+# Кнопки быстрого доступа (основные разделы) — чтобы не запоминать слова.
+# id — латиницей (Textual требует ASCII в идентификаторах), label — по-русски,
+# choice — ключ в SECTIONS.
+BUTTONS = [
+    ("portfolio", "Портфель", "портфель"),
+    ("rebalance", "Ребаланс", "ребаланс"),
+    ("forecast", "Прогноз", "прогноз"),
+    ("history", "История", "история"),
+    ("risk", "Риски", "риски"),
+]
 
 # Прогресс build_report не должен лезть в stdout (сломает экран Textual).
 NULL_CONSOLE = Console(file=StringIO())
@@ -84,6 +96,14 @@ class ThirdHandApp(App):
         color: $warning;
         padding: 0 1;
     }
+    #buttons {
+        height: 3;
+        padding: 0 1;
+        align: left middle;
+    }
+    #buttons Button {
+        margin-right: 1;
+    }
     #input {
         height: 3;
         border: round $accent;
@@ -96,22 +116,28 @@ class ThirdHandApp(App):
         self.account = account
         self.profile = profile
         self.parser = parser
+        self.detail = False          # False — «просто», True — «детально»
+        self.last_report = None
+        self.last_choice: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield RichLog(id="output", markup=True, wrap=True, highlight=True)
         yield Static("", id="status")
+        with Horizontal(id="buttons"):
+            for btn_id, label, _choice in BUTTONS:
+                yield Button(label, id=btn_id)
+            yield Button("Детально", id="btn-mode", variant="primary")
         yield Input(
             placeholder=(
-                "портфель · ребаланс · прогноз · риски · рынок · история · "
-                "календарь · новости · акции · облигации"
+                "или напиши: рынок · календарь · новости · акции · облигации · выход"
             ),
             id="input",
         )
 
     def on_mount(self) -> None:
         self.title = "Третья рука"
-        self.sub_title = self.account.name
+        self._refresh_mode_ui()
         out = self.query_one("#output", RichLog)
 
         # Центрируем по ширине окна (минус боковой padding RichLog в 1 символ).
@@ -162,7 +188,30 @@ class ThirdHandApp(App):
             return
         self._run(choice)
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        if button_id == "btn-mode":
+            self._toggle_mode()
+            return
+        for btn_id, _label, choice in BUTTONS:
+            if btn_id == button_id:
+                self._run(choice)
+                return
+
+    def _refresh_mode_ui(self) -> None:
+        """Синхронизирует шапку и кнопку-переключатель с текущим режимом."""
+        self.sub_title = f"{self.account.name} · {'детально' if self.detail else 'просто'}"
+        mode_button = self.query_one("#btn-mode", Button)
+        mode_button.label = "Просто" if self.detail else "Детально"
+
+    def _toggle_mode(self) -> None:
+        self.detail = not self.detail
+        self._refresh_mode_ui()
+        if self.last_report is not None:
+            self._render_report(self.last_report)
+
     def _run(self, choice: str) -> None:
+        self.last_choice = choice
         self.query_one("#status", Static).update(f"⟳ Собираю «{choice}»…")
         # run_worker вызывает work() без аргументов — оборачиваем в partial.
         self.run_worker(partial(self._build, choice), thread=True)
@@ -177,10 +226,18 @@ class ThirdHandApp(App):
         self.call_from_thread(self._show_report, report)
 
     def _show_report(self, report) -> None:
+        self.last_report = report
+        self._render_report(report)
+
+    def _render_report(self, report) -> None:
         out = self.query_one("#output", RichLog)
+        out.clear()
         width = max(80, self.size.width or 80)
         console = _CaptureConsole(width)
-        print_all(report, console=console)
+        if not self.detail and self.last_choice == "портфель":
+            print_summary(report, console=console)
+        else:
+            print_all(report, console=console)
         for renderable in console.renderables:
             out.write(renderable)
         self.query_one("#status", Static).update("")
