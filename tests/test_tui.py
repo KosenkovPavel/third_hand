@@ -55,6 +55,12 @@ def test_app_mounts_headlessly():
             assert pilot.app.query_one("#output") is not None
             assert pilot.app.query_one("#input") is not None
             assert pilot.app.query_one("#status") is not None
+            # приветственный экран: логотип + бренд, без эмодзи в шапке
+            assert pilot.app.title == "Третья рука"
+            text = " ".join(str(strip) for strip in pilot.app.query_one("#output").lines)
+            assert "Третья рука" in text
+            assert "честная бухгалтерия портфеля" in text
+            assert "\U0001F9BE" not in text  # 🦾 больше не используется
 
     asyncio.run(check())
 
