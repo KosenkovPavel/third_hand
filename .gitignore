@@ -1,0 +1,28 @@
+# Секреты
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Данные пользователя (реальный портфель, кэши, бэкапы)
+data/*
+# …кроме шаблона профиля — его коммитим
+!data/profile.example.json
+*.db
+
+# IDE
+.idea/
+.vscode/
+
+# Документация, ADR и планы — ведутся в вики GitHub, не в репозитории
+docs/
+
+# Личные материалы заявок/хакатона
+hackathon_experience.md

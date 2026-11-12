@@ -1,0 +1,32 @@
+{
+  "_comment": "Шаблон профиля: скопируй в profile.json и поправь под себя. Поля emergency_fund_ok/usdrub_alert/goals необязательны.",
+  "target": {
+    "Акции": 70,
+    "Облигации": 30
+  },
+  "contributions": [
+    {"day": 5, "amount": 5000},
+    {"day": 20, "amount": 5000}
+  ],
+  "iis": {
+    "type": "iis3",
+    "ndfl_rate": 0.13,
+    "open_date": "2025-01-15",
+    "claimed_years": []
+  },
+  "stress": false,
+  "emergency_fund_ok": false,
+  "usdrub_alert": 100,
+  "commission_pct": 0.3,
+  "inflation_pct": 7,
+  "goals": [
+    {"name": "Подушка на отпуск", "target": 300000, "years": 2},
+    {"name": "Квартира", "target": 3000000, "years": 7}
+  ],
+  "rules": {
+    "max_stock_positions": 10,
+    "min_position_pct": 5,
+    "max_position_pct": 20,
+    "max_sector_pct": 30
+  }
+}

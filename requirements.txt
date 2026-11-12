@@ -1,0 +1,5 @@
+t-tech-investments>=1.49
+python-dotenv>=1.0
+rich>=13.0
+mcp>=1.0,<2
+pytest>=8.0
