@@ -72,3 +72,31 @@ def test_show_report_renders_into_richlog():
             assert "100 000" in text  # _money форматирует 100000 → «100 000.00 ₽»
 
     asyncio.run(check())
+
+
+def test_run_section_collects_in_worker_and_renders(monkeypatch):
+    """Регрессия: run_worker вызывает _build без аргументов — обёртка partial.
+
+    Раньше ``run_worker(self._build, choice)`` передавал ``choice`` в параметр
+    ``name``, а не в ``_build``, и воркер падал с ``missing 1 required argument``.
+    """
+
+    monkeypatch.setattr(
+        "src.frontends.tui.build_report",
+        lambda client, account, args, profile, console: _report(),
+    )
+
+    async def check() -> None:
+        async with _make_app().run_test() as pilot:
+            await pilot.pause()
+            pilot.app._run("портфель")
+            # ждём завершения воркера: _show_report очищает статус
+            for _ in range(200):
+                await asyncio.sleep(0.02)
+                if pilot.app.query_one("#status")._Static__content == "":
+                    break
+            out = pilot.app.query_one("#output")
+            text = " ".join(str(s) for s in out.lines)
+            assert "Портфель (итог)" in text
+
+    asyncio.run(check())

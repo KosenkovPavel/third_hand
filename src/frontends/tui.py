@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from io import StringIO
 
 from rich.console import Console
@@ -123,7 +124,8 @@ class ThirdHandApp(App):
 
     def _run(self, choice: str) -> None:
         self.query_one("#status", Static).update(f"⟳ Собираю «{choice}»…")
-        self.run_worker(self._build, choice, thread=True)
+        # run_worker вызывает work() без аргументов — оборачиваем в partial.
+        self.run_worker(partial(self._build, choice), thread=True)
 
     def _build(self, choice: str) -> None:
         args = self.parser.parse_args(SECTIONS[choice])
