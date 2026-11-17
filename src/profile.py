@@ -265,3 +265,10 @@ def load_profile(path: Path | None = None) -> UserProfile:
         inflation_pct=inflation_pct,
         scoring=scoring,
     )
+
+
+def save_profile(data: dict, path: Path | None = None) -> Path:
+    """Записывает profile.json (минимальная схема: target, scoring, rules, …)."""
+    path = path or PROFILE_PATH
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
