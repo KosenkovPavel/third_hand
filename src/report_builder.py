@@ -132,7 +132,7 @@ def build_report(
     )
 
     console.print("Собираю фундаментальные данные и рекомендации...")
-    recommendations = analyze(client, snapshot, issues=data_warnings)
+    recommendations = analyze(client, snapshot, issues=data_warnings, weights=profile.scoring or None)
 
     payment_calendar = None
     if args.calendar:

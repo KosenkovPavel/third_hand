@@ -1,8 +1,10 @@
-"""Тесты фундаментального скоринга: расширенные поля StatisticResponse (фаза 7)."""
+"""Тесты фундаментального скоринга: расширенные поля StatisticResponse (фаза 7)
+и конфигурируемые метрики/веса (фаза 8)."""
 
 from types import SimpleNamespace
 
 from src.analytics import score_fundamentals
+from src.metrics import DEFAULT_WEIGHTS, METRICS, metric_score, weighted_score
 
 
 def _fake_f(**overrides):
@@ -48,3 +50,37 @@ def test_score_fundamentals_fills_extended_fields():
     assert rec.growth_3y == 8.0
     assert rec.growth_5y == 6.0
     assert rec.free_float == 80.0
+
+
+def test_metric_score_pe_and_weighted_score():
+    pts, note, risk = metric_score("pe", 5.0)
+    assert pts == 100
+    assert "недорого" in note
+    assert risk == ""
+
+
+def test_weighted_score_is_configurable():
+    values = {"pe": 5.0, "div_yield": 5.0, "roe": 20.0}
+    # только P/E — максимум
+    score, _, _ = weighted_score(values, {"pe": 1})
+    assert score == 100
+    # разные веса дают взвешенное среднее
+    score2, _, _ = weighted_score(values, {"pe": 1, "div_yield": 1, "roe": 1})
+    assert 0 <= score2 <= 100
+    # метрики с нулевым весом игнорируются
+    score3, reasons3, _ = weighted_score(values, {"pe": 1, "div_yield": 0})
+    assert score3 == 100
+    assert all("P/E" in r for r in reasons3)
+
+
+def test_default_weights_reference_known_metrics():
+    for m in DEFAULT_WEIGHTS:
+        assert m in METRICS, f"неизвестная метрика в DEFAULT_WEIGHTS: {m}"
+
+
+def test_score_fundamentals_custom_weights():
+    rec = score_fundamentals(
+        ticker="SBER", name="Сбер", instrument_type="share", f=_fake_f(),
+        weights={"pe": 1},
+    )
+    assert rec.score == 100  # P/E 5.0 → 100 баллов
