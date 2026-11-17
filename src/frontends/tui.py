@@ -19,6 +19,8 @@ from textual.containers import Horizontal
 from textual.widgets import Button, Header, Input, RichLog, Static
 
 from src import report as report_mod
+from src.metrics import METRICS
+from src.profile import PROFILE_PATH, load_profile, save_profile
 from src.report_builder import ReportError, build_multi_report, build_section
 
 from . import accounts_label, connect, primary_account
@@ -150,6 +152,9 @@ class ThirdHandApp(App):
         self.base_built_at = 0.0
         self._base_lock = threading.Lock()
         self._refresh_in_progress = False
+        self.setup_mode = False      # визард первого запуска
+        self.setup_step = 0
+        self.setup_data: dict = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -206,14 +211,94 @@ class ThirdHandApp(App):
         out.write(banner)
         self.query_one("#input", Input).focus()
 
+        if self._needs_setup():
+            self._enter_setup()
+            return
         # Предзагрузка базы при старте + фоновое обновление раз в N секунд,
         # чтобы внутри всё летало и не нужно было жать кнопки ради свежих данных.
+        self._start_background_load()
+        self.set_interval(BASE_REFRESH_SECONDS, self._start_background_load)
+
+    def _needs_setup(self) -> bool:
+        return not PROFILE_PATH.exists()
+
+    def _enter_setup(self) -> None:
+        self.setup_mode = True
+        self.setup_step = 0
+        self.setup_data = {"target": None, "scoring": None}
+        self._show_setup_prompt()
+
+    def _show_setup_prompt(self) -> None:
+        out = self.query_one("#output", RichLog)
+        out.clear()
+        inp = self.query_one("#input", Input)
+        if self.setup_step == 0:
+            out.write("[bold]Настройка · шаг 1/2 · целевая структура[/bold]\n\n")
+            out.write("Сколько % портфеля держать в [bold]акциях[/bold]?\n")
+            out.write("(остальное — облигации)\n\n")
+            out.write("[dim]Введи число 0–100 или Enter (по умолчанию 70)[/dim]")
+            inp.placeholder = "например: 70"
+        elif self.setup_step == 1:
+            out.write("[bold]Настройка · шаг 2/2 · метрики рейтинга[/bold]\n\n")
+            out.write("Какие показатели учитывать в рейтинге компаний?\n")
+            out.write("[dim]Enter — по умолчанию (P/E, дивиденды, ROE, рост, payout, долг)[/dim]\n\n")
+            for key, m in METRICS.items():
+                out.write(f"  [cyan]{key}[/cyan] · {m.label} — {m.description}")
+            inp.placeholder = "Enter = по умолчанию, или: pe, div_yield, roe"
+
+    def _handle_setup_input(self, text: str) -> None:
+        text = text.strip()
+        out = self.query_one("#output", RichLog)
+        if self.setup_step == 0:
+            try:
+                stocks = int(text) if text else 70
+                if not 0 <= stocks <= 100:
+                    raise ValueError
+            except ValueError:
+                out.write("[red]Введи целое число 0–100[/red]")
+                return
+            self.setup_data["target"] = {"Акции": stocks, "Облигации": 100 - stocks}
+            self.setup_step = 1
+            self._show_setup_prompt()
+            return
+
+        if self.setup_step == 1:
+            if text:
+                keys = [k.strip() for k in text.replace(";", ",").split(",") if k.strip()]
+                unknown = [k for k in keys if k not in METRICS]
+                if unknown:
+                    out.write(f"[red]Не знаю метрик: {', '.join(unknown)}. "
+                              f"Доступно: {', '.join(METRICS)}[/red]")
+                    return
+                self.setup_data["scoring"] = {k: 1.0 for k in keys}
+            self._finish_setup()
+
+    def _finish_setup(self) -> None:
+        data = {"target": self.setup_data["target"]}
+        if self.setup_data.get("scoring"):
+            data["scoring"] = self.setup_data["scoring"]
+        save_profile(data, PROFILE_PATH)
+        self.setup_mode = False
+        self.profile = load_profile(PROFILE_PATH)
+
+        out = self.query_one("#output", RichLog)
+        out.clear()
+        out.write("[bold green]Готово![/bold green] Настройки сохранены.\n")
+        out.write(
+            "Целевая структура: "
+            + "; ".join(f"{k} {v:.0f}%" for k, v in self.profile.target.items())
+            + "\n\n"
+        )
+        out.write("Загружаю портфель…")
         self._start_background_load()
         self.set_interval(BASE_REFRESH_SECONDS, self._start_background_load)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         choice = event.value.strip().lower()
         event.input.value = ""
+        if self.setup_mode:
+            self._handle_setup_input(choice)
+            return
         if choice in ("выход", "exit", "quit", "q"):
             self.exit()
             return

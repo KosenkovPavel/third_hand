@@ -1,6 +1,7 @@
 """Headless-тесты Textual-TUI: монтирование, рендер отчёта и режимы детализации."""
 
 import asyncio
+import json
 from decimal import Decimal
 from io import StringIO
 
@@ -81,6 +82,26 @@ def _full_report() -> ReportData:
 
 def _make_app():
     return ThirdHandApp(object(), [_FakeAccount()], UserProfile(), build_parser())
+
+
+@pytest.fixture()
+def fake_profile(tmp_path):
+    """Фейковый profile.json в tmp — чтобы не трогать реальный data/profile.json."""
+    p = tmp_path / "profile.json"
+    p.write_text("{}", encoding="utf-8")
+    return p
+
+
+@pytest.fixture(autouse=True)
+def _tui_profile(fake_profile, monkeypatch):
+    """Все TUI-тесты идут «как настроенные»: profile.json существует.
+
+    В CI нет data/profile.json — без патча TUI уходил бы в визард первого
+    запуска и ломал тесты приветствия и предзагрузки. Тесты визарда удаляют
+    файл через фикстуру fake_profile.
+    """
+    monkeypatch.setattr("src.frontends.tui.PROFILE_PATH", fake_profile)
+    return fake_profile
 
 
 def test_capture_console_collects_renderables_without_printing():
@@ -245,5 +266,107 @@ def test_run_section_collects_in_worker_and_renders(monkeypatch):
             out = pilot.app.query_one("#output")
             text = " ".join(str(s) for s in out.lines)
             assert "Стоимость" in text
+
+    asyncio.run(check())
+
+
+# --- Онбординг-визард первого запуска (фаза 8) ---
+
+
+def _output_text(app) -> str:
+    """Собирает текст RichLog по сегментам (str(Strip) даёт repr, не текст)."""
+    return " ".join(strip.text for strip in app.query_one("#output").lines)
+
+
+def test_wizard_starts_when_profile_missing(fake_profile):
+    """Нет profile.json → TUI открывается визардом, а не приветствием."""
+    fake_profile.unlink()
+
+    async def check() -> None:
+        async with _make_app().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert app.setup_mode is True
+            assert app.setup_step == 0
+            assert "шаг 1/2" in _output_text(app)
+            assert "акциях" in _output_text(app)
+
+    asyncio.run(check())
+
+
+def test_wizard_validates_target(fake_profile):
+    """Шаг 1: нечисловой/вне диапазона ввод не продвигает визард."""
+    fake_profile.unlink()
+
+    async def check() -> None:
+        async with _make_app().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            app._handle_setup_input("абракадабра")
+            assert app.setup_step == 0
+            app._handle_setup_input("150")
+            assert app.setup_step == 0
+            assert "0–100" in _output_text(app)
+
+    asyncio.run(check())
+
+
+def test_wizard_full_flow_saves_profile(fake_profile, monkeypatch):
+    """Полный флоу: 70% акций → метрики → сохранение → профиль подхвачен."""
+    fake_profile.unlink()
+    monkeypatch.setattr(
+        "src.frontends.tui.build_multi_report",
+        lambda client, accounts, args, profile, console: _report(),
+    )
+
+    async def check() -> None:
+        async with _make_app().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            # шаг 1: 70% в акциях
+            app._handle_setup_input("70")
+            assert app.setup_step == 1
+            assert app.setup_data["target"] == {"Акции": 70, "Облигации": 30}
+            # шаг 2: неизвестная метрика отклоняется
+            app._handle_setup_input("pe, чеготакого")
+            assert app.setup_step == 1
+            # выбираем метрики и завершаем
+            app._handle_setup_input("pe, div_yield, roe")
+            assert app.setup_mode is False
+            # профиль сохранён и подхвачен приложением
+            assert fake_profile.exists()
+            saved = json.loads(fake_profile.read_text(encoding="utf-8"))
+            assert saved["target"] == {"Акции": 70, "Облигации": 30}
+            assert saved["scoring"] == {"pe": 1.0, "div_yield": 1.0, "roe": 1.0}
+            assert app.profile.scoring == {"pe": 1.0, "div_yield": 1.0, "roe": 1.0}
+            # после визарда портфель предзагружается
+            for _ in range(200):
+                await asyncio.sleep(0.02)
+                if app.last_choice == "портфель":
+                    break
+            assert app.last_choice == "портфель"
+
+    asyncio.run(check())
+
+
+def test_wizard_default_metrics_on_empty_input(fake_profile, monkeypatch):
+    """Enter на шаге 2 → без секции scoring (дефолтные веса скоринга)."""
+    fake_profile.unlink()
+    monkeypatch.setattr(
+        "src.frontends.tui.build_multi_report",
+        lambda client, accounts, args, profile, console: _report(),
+    )
+
+    async def check() -> None:
+        async with _make_app().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            app._handle_setup_input("")          # дефолт: 70/30
+            app._handle_setup_input("")          # дефолтные метрики
+            assert app.setup_mode is False
+            saved = json.loads(fake_profile.read_text(encoding="utf-8"))
+            assert saved["target"] == {"Акции": 70, "Облигации": 30}
+            assert "scoring" not in saved
+            assert app.profile.scoring == {}
 
     asyncio.run(check())

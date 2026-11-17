@@ -28,5 +28,12 @@
     "min_position_pct": 5,
     "max_position_pct": 20,
     "max_sector_pct": 30
+  },
+  "_comment_scoring": "Необязательно: веса метрик рейтинга компаний (взвешенное среднее, 0 = не учитывать). Доступные метрики: pe, pb, ps, ev_ebitda, roe, roa, roic, net_margin, div_yield, payout, rev_growth, growth_3y, debt_eq, debt_ebitda, beta. Без секции — дефолтные веса (P/E, дивиденды, ROE, рост, payout, долг).",
+  "scoring": {
+    "pe": 20,
+    "div_yield": 30,
+    "roe": 15,
+    "debt_eq": 10
   }
 }
