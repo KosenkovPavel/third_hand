@@ -16,7 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from rich.console import Console
 
 from src.iis import tax_report_text
-from src.report_builder import build_report
+from src.report_builder import build_multi_report
 
 from . import connect
 from .cli import build_parser
@@ -48,9 +48,9 @@ def _report(flags: list[str]):
     setup = _setup()
     if setup is None:
         raise RuntimeError("Не удалось подключиться к брокеру (проверьте токен и счёт в .env)")
-    client, account, profile = setup
+    client, accounts, profile = setup
     args = _parser.parse_args(flags)
-    return build_report(client, account, args, profile, _console)
+    return build_multi_report(client, accounts, args, profile, _console)
 
 
 @mcp.tool()

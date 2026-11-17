@@ -19,9 +19,9 @@ from textual.containers import Horizontal
 from textual.widgets import Button, Header, Input, RichLog, Static
 
 from src import report as report_mod
-from src.report_builder import ReportError, build_report, build_section
+from src.report_builder import ReportError, build_multi_report, build_section
 
-from . import connect
+from . import accounts_label, connect, primary_account
 from .cli import build_parser
 
 SECTIONS = {
@@ -136,10 +136,11 @@ class ThirdHandApp(App):
     }
     """
 
-    def __init__(self, client, account, profile, parser) -> None:
+    def __init__(self, client, accounts, profile, parser) -> None:
         super().__init__()
         self.client = client
-        self.account = account
+        self.accounts = accounts          # все инвестиционные счета
+        self.account = primary_account(accounts)  # ИИС или первый — для налоговой логики
         self.profile = profile
         self.parser = parser
         self.detail = False          # False — «просто», True — «детально»
@@ -235,7 +236,7 @@ class ThirdHandApp(App):
 
     def _refresh_mode_ui(self) -> None:
         """Синхронизирует шапку и кнопку-переключатель с текущим режимом."""
-        self.sub_title = f"{self.account.name} · {'детально' if self.detail else 'просто'}"
+        self.sub_title = f"{accounts_label(self.accounts)} · {'детально' if self.detail else 'просто'}"
         mode_button = self.query_one("#btn-mode", Button)
         mode_button.label = "Просто" if self.detail else "Детально"
 
@@ -258,7 +259,7 @@ class ThirdHandApp(App):
         try:
             with self._base_lock:
                 args = self.parser.parse_args([])
-                base = build_report(self.client, self.account, args, self.profile, NULL_CONSOLE)
+                base = build_multi_report(self.client, self.accounts, args, self.profile, NULL_CONSOLE)
                 self.base_report = base
                 self.base_built_at = time.monotonic()
         except Exception as exc:  # noqa: BLE001
@@ -297,8 +298,8 @@ class ThirdHandApp(App):
             if self.base_report is not None and now - self.base_built_at < BASE_REFRESH_SECONDS:
                 return self.base_report
             args = self.parser.parse_args([])
-            self.base_report = build_report(
-                self.client, self.account, args, self.profile, NULL_CONSOLE
+            self.base_report = build_multi_report(
+                self.client, self.accounts, args, self.profile, NULL_CONSOLE
             )
             self.base_built_at = time.monotonic()
             return self.base_report
@@ -343,6 +344,6 @@ def run_tui(parser, console) -> int:
     setup = connect(console)
     if setup is None:
         return 1
-    client, account, profile = setup
-    ThirdHandApp(client, account, profile, parser).run()
+    client, accounts, profile = setup
+    ThirdHandApp(client, accounts, profile, parser).run()
     return 0

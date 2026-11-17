@@ -6,16 +6,35 @@
 
 from __future__ import annotations
 
-from src.config import get_account_id, get_token
+from src.config import get_token
 from src.profile import load_profile
 from src.providers import get_client
 
+# Инвестиционные типы счетов Т-Инвестиций (см. AccountType в SDK):
+# 1 = брокерский, 2 = ИИС, 3 = инвесткопилка.
+INVESTMENT_ACCOUNT_TYPES = (1, 2, 3)
+ACCOUNT_TYPE_IIS = 2
+
+
+def primary_account(accounts):
+    """ИИС (если есть), иначе первый счёт — для налоговой логики (вычеты, срок ИИС)."""
+    for a in accounts:
+        if a.account_type == ACCOUNT_TYPE_IIS:
+            return a
+    return accounts[0]
+
+
+def accounts_label(accounts) -> str:
+    """Короткая подпись счетов для шапки TUI: «ИИС + Брокерский счёт»."""
+    return " + ".join(a.name for a in accounts)
+
 
 def connect(console, account_id: str | None = None):
-    """Общий setup: token → client → accounts → account → profile.
+    """Общий setup: token → client → accounts → profile.
 
-    Возвращает ``(client, account, profile)`` или ``None`` при ошибке
-    (сообщение уже выведено в ``console``).
+    Возвращает ``(client, accounts, profile)`` — **список** инвестиционных счетов
+    (брокерский, ИИС, инвесткопилка). При явном ``account_id`` — один счёт.
+    ``None`` при ошибке (сообщение уже выведено в ``console``).
     """
     token = get_token()
     if not token:
@@ -28,24 +47,25 @@ def connect(console, account_id: str | None = None):
     client = get_client("tinkoff", token)
 
     try:
-        accounts = client.accounts()
+        all_accounts = client.accounts()
     except Exception as exc:  # noqa: BLE001
         console.print(f"[bold red]Ошибка подключения к API:[/] {exc}")
         return None
 
-    account_id = account_id or get_account_id()
-    if not account_id:
-        console.print("[bold yellow]Не указан ACCOUNT_ID. Доступные счета:[/]")
-        for acc in accounts:
-            console.print(f"  [cyan]{acc.id}[/] — {acc.name}")
-        return None
+    if account_id:
+        accounts = [a for a in all_accounts if a.id == account_id]
+        if not accounts:
+            console.print(f"[yellow]Счёт {account_id} не найден в списке доступных.[/]")
+            return None
+    else:
+        # Мультисчёт по умолчанию: все инвестиционные счета.
+        accounts = [a for a in all_accounts if a.account_type in INVESTMENT_ACCOUNT_TYPES]
+        if not accounts:
+            console.print("[yellow]Нет инвестиционных счетов у брокера.[/]")
+            return None
 
-    matches = [a for a in accounts if a.id == account_id]
-    if not matches:
-        console.print(f"[yellow]Счёт {account_id} не найден в списке доступных.[/]")
-        return None
-    account = matches[0]
-    console.print(f"Счёт: [bold cyan]{account.name}[/] ({account_id})")
+    names = ", ".join(a.name for a in accounts)
+    console.print(f"Счета: [bold cyan]{names}[/]")
 
     console.print("Загружаю профиль пользователя...")
     try:
@@ -54,4 +74,4 @@ def connect(console, account_id: str | None = None):
         console.print(f"[bold red]Ошибка в data/profile.json:[/] {exc}")
         return None
 
-    return client, account, profile
+    return client, accounts, profile
