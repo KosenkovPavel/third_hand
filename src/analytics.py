@@ -54,14 +54,28 @@ class Recommendation:
     reasons: list[str] = field(default_factory=list)
     risks: list[str] = field(default_factory=list)
     forward_dividend_income: Decimal = Decimal("0")
+    # мультипликаторы и рентабельность (TTM)
     pe: float | None = None
     pb: float | None = None
+    ps: float | None = None
+    ev_ebitda: float | None = None
     roe: float | None = None
+    roa: float | None = None
+    roic: float | None = None
+    net_margin: float | None = None
     div_yield: float | None = None
     payout: float | None = None
     rev_growth: float | None = None
+    growth_3y: float | None = None
+    growth_5y: float | None = None
     debt_eq: float | None = None
+    debt_ebitda: float | None = None
     beta: float | None = None
+    # абсолютные величины
+    market_cap: float | None = None
+    fcf: float | None = None
+    eps: float | None = None
+    free_float: float | None = None
 
 
 def analyze(
@@ -183,12 +197,24 @@ def score_fundamentals(
 
     pe = f.pe_ratio_ttm or 0.0
     pb = f.price_to_book_ttm or 0.0
+    ps = f.price_to_sales_ttm or 0.0
+    ev_ebitda = f.ev_to_ebitda_mrq or 0.0
     roe = f.roe or 0.0
+    roa = f.roa or 0.0
+    roic = f.roic or 0.0
+    net_margin = f.net_margin_mrq or 0.0
     div_yield = f.dividend_yield_daily_ttm or 0.0
     payout = f.dividend_payout_ratio_fy or 0.0
     rev_growth = f.one_year_annual_revenue_growth_rate or 0.0
+    growth_3y = f.three_year_annual_revenue_growth_rate or 0.0
+    growth_5y = f.five_year_annual_revenue_growth_rate or 0.0
     debt_eq = f.total_debt_to_equity_mrq or 0.0
+    debt_ebitda = f.total_debt_to_ebitda_mrq or 0.0
     beta = f.beta or 0.0
+    market_cap = f.market_capitalization or 0.0
+    fcf = f.free_cash_flow_ttm or 0.0
+    eps = f.eps_ttm or 0.0
+    free_float = f.free_float or 0.0
 
     if not any((pe, pb, roe, div_yield, rev_growth)):
         note = (
@@ -344,12 +370,24 @@ def score_fundamentals(
         forward_dividend_income=forward_dividend or Decimal("0"),
         pe=pe or None,
         pb=pb or None,
+        ps=ps or None,
+        ev_ebitda=ev_ebitda or None,
         roe=roe or None,
+        roa=roa or None,
+        roic=roic or None,
+        net_margin=net_margin or None,
         div_yield=div_yield or None,
         payout=payout or None,
         rev_growth=rev_growth or None,
+        growth_3y=growth_3y or None,
+        growth_5y=growth_5y or None,
         debt_eq=debt_eq or None,
+        debt_ebitda=debt_ebitda or None,
         beta=beta or None,
+        market_cap=market_cap or None,
+        fcf=fcf or None,
+        eps=eps or None,
+        free_float=free_float or None,
     )
 
 
