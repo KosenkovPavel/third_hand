@@ -11,7 +11,7 @@ from decimal import Decimal
 
 from rich.console import Console
 
-from .accounting import Accountant
+from .accounting import Accountant, merge_accounting
 from .analytics import analyze, apply_portfolio_rules
 from .bonds import BondFilters, bond_screen
 from .calendar import build_calendar
@@ -34,6 +34,7 @@ from .macro import key_rate as cbr_key_rate
 from .market import build_market_opinion
 from .news import build_news_background
 from .picks import PickFilters, pick_stocks
+from .portfolio import merge_snapshots
 from .rebalance import calculate_rebalance
 from .recommendation_history import evaluate_recommendations, load_recommendations
 from .report_data import ReportData
@@ -58,8 +59,16 @@ def build_report(
     args,
     profile,
     console: Console,
+    *,
+    snapshot=None,
+    acct=None,
+    acct_full=None,
 ) -> ReportData:
     """Собирает все вычисления отчёта в один ``ReportData``.
+
+    ``snapshot`` / ``acct`` / ``acct_full`` можно передать готовыми (например,
+    объединёнными по нескольким счетам — см. ``build_multi_report``), иначе они
+    собираются из API по ``account.id``.
 
     Побочные эффекты (``--save``, ``--tax``, ``--telegram``) сюда не входят —
     их выполняет вызывающий код поверх результата.
@@ -85,33 +94,39 @@ def build_report(
         return Accountant(client, account_id).report(from_=window_from, to=to)
 
     tasks = {
-        "snapshot": _snapshot,
-        "acct": lambda: _operations(from_),
         "key_rate": cbr_key_rate,
         "sectors": lambda: load_sectors(client),
         "usd_rub": client.usd_rub,
         "rgbi": client.rgbi,
     }
-    if need_full_window:
+    if snapshot is None:
+        tasks["snapshot"] = _snapshot
+    if acct is None:
+        tasks["acct"] = lambda: _operations(from_)
+    need_full_fetch = acct_full is None and need_full_window
+    if need_full_fetch:
         tasks["acct_full"] = lambda: _operations(opened)
 
     with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
         futures = {name: pool.submit(fn) for name, fn in tasks.items()}
-        snapshot = futures["snapshot"].result()
-        acct = futures["acct"].result()
+        if snapshot is None:
+            snapshot = futures["snapshot"].result()
+        if acct is None:
+            acct = futures["acct"].result()
         cbr_rate = futures["key_rate"].result()
         sector_by_uid = futures["sectors"].result()
         usdrub = futures["usd_rub"].result()
         rgbi = futures["rgbi"].result()
 
     # Для XIRR и «внесено/рост» — операции за всю жизнь счёта, если дата открытия известна.
-    acct_full = acct
     full_window = opened is not None
-    if need_full_window:
-        try:
-            acct_full = futures["acct_full"].result()
-        except Exception:  # noqa: BLE001
-            full_window = False
+    if acct_full is None:
+        acct_full = acct
+        if need_full_window:
+            try:
+                acct_full = futures["acct_full"].result()
+            except Exception:  # noqa: BLE001
+                full_window = False
     if not full_window:
         console.print(
             f"[dim]Полная история операций недоступна — XIRR, «внесено/рост» и взносы ИИС "
@@ -484,6 +499,61 @@ def build_report(
         rgbi=rgbi,
         deposit_pct=deposit_pct,
         data_warnings=data_warnings,
+    )
+
+
+# Инвестиционные типы счетов Т-Инвестиций (см. AccountType в SDK).
+ACCOUNT_TYPE_BROKER = 1
+ACCOUNT_TYPE_INVEST_BOX = 3
+INVESTMENT_ACCOUNT_TYPES = {ACCOUNT_TYPE_BROKER, ACCOUNT_TYPE_IIS, ACCOUNT_TYPE_INVEST_BOX}
+
+
+def build_multi_report(client, accounts, args, profile, console: Console) -> ReportData:
+    """Собирает отчёт по ВСЕМ инвестиционным счетам (мультисчёт, ADR-0010).
+
+    Берёт счета типов «брокерский/ИИС/инвесткопилка» из ``client.accounts()``,
+    объединяет их снимки и бухгалтерию и строит один сводный ``ReportData``.
+    ИИС (если есть) — «главный» счёт для налоговой логики (вычеты, срок ИИС-3).
+    """
+    inv = [a for a in accounts if a.account_type in INVESTMENT_ACCOUNT_TYPES]
+    if not inv:
+        raise ReportError("Нет инвестиционных счетов у брокера.")
+    if len(inv) == 1:
+        return build_report(client, inv[0], args, profile, console)
+
+    primary = next((a for a in inv if a.account_type == ACCOUNT_TYPE_IIS), inv[0])
+
+    to = datetime.now(timezone.utc)
+    from_ = to - timedelta(days=args.history_days)
+
+    def fetch(acc):
+        snap = client.snapshot(acc.id)
+        acct = Accountant(client, acc.id).report(from_=from_, to=to)
+        acct_full = acct
+        opened = acc.opened_date
+        if opened and opened < from_:
+            try:
+                acct_full = Accountant(client, acc.id).report(from_=opened, to=to)
+            except Exception:  # noqa: BLE001
+                acct_full = acct
+        return snap, acct, acct_full
+
+    with ThreadPoolExecutor(max_workers=len(inv)) as pool:
+        results = list(pool.map(fetch, inv))
+
+    merged_snapshot = merge_snapshots([r[0] for r in results])
+    merged_acct = merge_accounting([r[1] for r in results])
+    merged_acct_full = merge_accounting([r[2] for r in results])
+
+    return build_report(
+        client,
+        primary,
+        args,
+        profile,
+        console,
+        snapshot=merged_snapshot,
+        acct=merged_acct,
+        acct_full=merged_acct_full,
     )
 
 

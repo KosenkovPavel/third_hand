@@ -165,6 +165,36 @@ class AccountingReport:
         )
 
 
+def merge_accounting(reports: list[AccountingReport]) -> AccountingReport:
+    """Объединяет бухгалтерию нескольких счетов: суммы, операции и by_instrument."""
+    if not reports:
+        raise ValueError("нет отчётов для объединения")
+    if len(reports) == 1:
+        return reports[0]
+
+    zero = Decimal("0")
+    merged = AccountingReport(account_id="+".join(r.account_id for r in reports))
+    for r in reports:
+        merged.total_in += r.total_in
+        merged.total_out += r.total_out
+        merged.total_buy += r.total_buy
+        merged.total_sell += r.total_sell
+        merged.total_dividends += r.total_dividends
+        merged.total_coupons += r.total_coupons
+        merged.total_fees += r.total_fees
+        merged.total_taxes += r.total_taxes
+        merged.operations_count += r.operations_count
+        merged.ops.extend(r.ops)
+        for ticker, d in r.by_instrument.items():
+            md = merged.by_instrument.setdefault(
+                ticker, {"buy": zero, "sell": zero, "div": zero}
+            )
+            md["buy"] += d["buy"]
+            md["sell"] += d["sell"]
+            md["div"] += d["div"]
+    return merged
+
+
 class Accountant:
     def __init__(self, client: TinkoffClient, account_id: str) -> None:
         self.client = client

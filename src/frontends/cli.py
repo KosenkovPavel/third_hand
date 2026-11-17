@@ -14,7 +14,7 @@ from src.portfolio import save_snapshot
 from src.rebalance import calculate_rebalance
 from src.recommendation_history import save_recommendations
 from src.report import print_all
-from src.report_builder import ReportError, build_report, fmt_money
+from src.report_builder import ReportError, build_multi_report, fmt_money
 
 from . import connect
 
@@ -224,10 +224,10 @@ def run_cli(parser: argparse.ArgumentParser, console) -> int:
     setup = connect(console, account_id=args.account)
     if setup is None:
         return 1
-    client, account, profile = setup
+    client, accounts, profile = setup
 
     try:
-        report = build_report(client, account, args, profile, console)
+        report = build_multi_report(client, accounts, args, profile, console)
     except ReportError as exc:
         console.print(f"[bold red]{exc}[/]")
         return 1

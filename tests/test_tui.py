@@ -80,7 +80,7 @@ def _full_report() -> ReportData:
 
 
 def _make_app():
-    return ThirdHandApp(object(), _FakeAccount(), UserProfile(), build_parser())
+    return ThirdHandApp(object(), [_FakeAccount()], UserProfile(), build_parser())
 
 
 def test_capture_console_collects_renderables_without_printing():
@@ -204,8 +204,8 @@ def test_mode_toggle_switches_summary_and_detail():
 def test_preload_shows_summary_on_start(monkeypatch):
     """При запуске база грузится фоном, и сводка появляется без кликов."""
     monkeypatch.setattr(
-        "src.frontends.tui.build_report",
-        lambda client, account, args, profile, console: _full_report(),
+        "src.frontends.tui.build_multi_report",
+        lambda client, accounts, args, profile, console: _full_report(),
     )
 
     async def check() -> None:
@@ -229,8 +229,8 @@ def test_run_section_collects_in_worker_and_renders(monkeypatch):
     """
 
     monkeypatch.setattr(
-        "src.frontends.tui.build_report",
-        lambda client, account, args, profile, console: _report(),
+        "src.frontends.tui.build_multi_report",
+        lambda client, accounts, args, profile, console: _report(),
     )
 
     async def check() -> None:
