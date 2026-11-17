@@ -64,10 +64,18 @@ ACCOUNT_ID=id_счёта
 
 ```bash
 python main.py                          # TUI — диалог-«окошко» (без флагов)
+```
+
+При первом запуске TUI-визард спрашивает целевую структуру (сколько % портфеля в
+акциях) и показатели рейтинга компаний — настройки сохраняются в
+`data/profile.json`. Позже их можно поменять правкой файла руками
+(схема и все поля — в `data/profile.example.json`).
+
+```bash
 python main.py --rebalance              # ребалансировка под цель из профиля
 python main.py --rebalance '{"Акции": 60, "Облигации": 40}' --invest 10000
 python main.py --forecast --risk --market
-python main.py --help                   # все флаги
+python main.py --help                   # все флагы
 ```
 
 ## 🤖 MCP-сервер (для агентов)
