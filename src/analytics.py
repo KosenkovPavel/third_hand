@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
+from .metrics import DEFAULT_WEIGHTS, weighted_score
 from .portfolio import PortfolioSnapshot, Position
 from .providers.tinkoff import TinkoffClient
 
@@ -54,20 +55,35 @@ class Recommendation:
     reasons: list[str] = field(default_factory=list)
     risks: list[str] = field(default_factory=list)
     forward_dividend_income: Decimal = Decimal("0")
+    # мультипликаторы и рентабельность (TTM)
     pe: float | None = None
     pb: float | None = None
+    ps: float | None = None
+    ev_ebitda: float | None = None
     roe: float | None = None
+    roa: float | None = None
+    roic: float | None = None
+    net_margin: float | None = None
     div_yield: float | None = None
     payout: float | None = None
     rev_growth: float | None = None
+    growth_3y: float | None = None
+    growth_5y: float | None = None
     debt_eq: float | None = None
+    debt_ebitda: float | None = None
     beta: float | None = None
+    # абсолютные величины
+    market_cap: float | None = None
+    fcf: float | None = None
+    eps: float | None = None
+    free_float: float | None = None
 
 
 def analyze(
     client: TinkoffClient,
     snapshot: PortfolioSnapshot,
     issues: list[str] | None = None,
+    weights: dict | None = None,
 ) -> list[Recommendation]:
     """Собирает фундаментальные данные по акциям/ETF и строит рекомендации."""
     targets = [
@@ -103,7 +119,7 @@ def analyze(
     recs: list[Recommendation] = []
     for p in targets:
         f = fund_by_uid.get(p.asset_uid)
-        recs.append(_build_recommendation(p, f))
+        recs.append(_build_recommendation(p, f, weights))
     return recs
 
 
@@ -163,12 +179,13 @@ def score_fundamentals(
     forward_dividend: Decimal | None = None,
     sector: str | None = None,
     stress: bool = False,
+    weights: dict | None = None,
 ) -> Recommendation:
     """Выставляет фундаментальную оценку (0–100) по данным get_asset_fundamentals.
 
-    Пригодна как для позиций портфеля, так и для любых бумаг из универсума.
-    В стресс-режиме (``stress=True``): выше вес дивидендной доходности,
-    секторный тилт (защитные +, циклические −), предпочтение низкой беты.
+    Оценка — взвешенное среднее метрик из каталога ``metrics.METRICS``; набор
+    метрик и их веса задаёт ``weights`` (по умолчанию ``DEFAULT_WEIGHTS``).
+    В стресс-режиме: секторный тилт и предпочтение низкой беты/высоких дивидендов.
     """
     if f is None:
         return Recommendation(
@@ -183,12 +200,24 @@ def score_fundamentals(
 
     pe = f.pe_ratio_ttm or 0.0
     pb = f.price_to_book_ttm or 0.0
+    ps = f.price_to_sales_ttm or 0.0
+    ev_ebitda = f.ev_to_ebitda_mrq or 0.0
     roe = f.roe or 0.0
+    roa = f.roa or 0.0
+    roic = f.roic or 0.0
+    net_margin = f.net_margin_mrq or 0.0
     div_yield = f.dividend_yield_daily_ttm or 0.0
     payout = f.dividend_payout_ratio_fy or 0.0
     rev_growth = f.one_year_annual_revenue_growth_rate or 0.0
+    growth_3y = f.three_year_annual_revenue_growth_rate or 0.0
+    growth_5y = f.five_year_annual_revenue_growth_rate or 0.0
     debt_eq = f.total_debt_to_equity_mrq or 0.0
+    debt_ebitda = f.total_debt_to_ebitda_mrq or 0.0
     beta = f.beta or 0.0
+    market_cap = f.market_capitalization or 0.0
+    fcf = f.free_cash_flow_ttm or 0.0
+    eps = f.eps_ttm or 0.0
+    free_float = f.free_float or 0.0
 
     if not any((pe, pb, roe, div_yield, rev_growth)):
         note = (
@@ -206,100 +235,26 @@ def score_fundamentals(
             forward_dividend_income=forward_dividend or Decimal("0"),
         )
 
-    score = 0
-    reasons: list[str] = []
-    risks: list[str] = []
-
-    # --- P/E ---
-    if pe > 0:
-        if pe <= 10:
-            score += 25
-            reasons.append(f"P/E {pe:.1f} — недорого")
-        elif pe <= 18:
-            score += 18
-            reasons.append(f"P/E {pe:.1f} — адекватно")
-        elif pe <= 30:
-            score += 8
-            reasons.append(f"P/E {pe:.1f} — дорого")
-        else:
-            reasons.append(f"P/E {pe:.1f} — очень дорого")
-    elif pe < 0:
-        score -= 15
-        risks.append("Убыточная компания (P/E < 0)")
-
-    # --- Див. доходность ---
-    if div_yield >= 8:
-        score += 25
-        reasons.append(f"Див. доходность {div_yield:.1f}% — отличная")
-    elif div_yield >= 5:
-        score += 20
-        reasons.append(f"Див. доходность {div_yield:.1f}% — хорошая")
-    elif div_yield >= 3:
-        score += 12
-        reasons.append(f"Див. доходность {div_yield:.1f}%")
-    elif div_yield > 0:
-        score += 4
-        reasons.append(f"Див. доходность {div_yield:.1f}% — невысокая")
-    else:
-        reasons.append("Дивиденды не начисляются")
-
-    # --- ROE ---
-    if roe >= 15:
-        score += 15
-        reasons.append(f"ROE {roe:.1f}% — отличная")
-    elif roe >= 8:
-        score += 8
-        reasons.append(f"ROE {roe:.1f}% — нормальная")
-    elif roe > 0:
-        score += 2
-        reasons.append(f"ROE {roe:.1f}% — слабая")
-    elif roe < 0:
-        score -= 15
-        risks.append(f"ROE {roe:.1f}% — отрицательная")
-
-    # --- Выручка Y/Y ---
-    if rev_growth > 10:
-        score += 10
-        reasons.append(f"Выручка +{rev_growth:.1f}% за год — растёт")
-    elif rev_growth > 0:
-        score += 6
-        reasons.append(f"Выручка +{rev_growth:.1f}% за год")
-    elif rev_growth > -5:
-        if rev_growth < 0:
-            score -= 5
-            reasons.append(f"Выручка {rev_growth:.1f}% за год — снижается")
-    else:
-        score -= 12
-        risks.append(f"Выручка {rev_growth:.1f}% за год — резко падает")
-
-    # --- Payout ---
-    if payout > 0:
-        if 30 <= payout <= 80:
-            score += 10
-            reasons.append(f"Payout {payout:.0f}% — устойчивый")
-        elif 0 < payout < 30:
-            score += 5
-            reasons.append(f"Payout {payout:.0f}% — консервативный")
-        elif payout > 100:
-            score -= 10
-            risks.append(f"Payout {payout:.0f}% — выплачивают больше, чем заработали")
-        else:
-            score += 3
-            reasons.append(f"Payout {payout:.0f}% — высокий")
-
-    # --- Долг/Собственный капитал ---
-    if debt_eq > 0:
-        if debt_eq <= 50:
-            score += 5
-            reasons.append(f"Долг/капитал {debt_eq:.0f}% — низкий")
-        elif debt_eq <= 150:
-            score += 2
-        elif debt_eq <= 300:
-            score -= 3
-            risks.append(f"Долг/капитал {debt_eq:.0f}% — высокий")
-        else:
-            score -= 10
-            risks.append(f"Долг/капитал {debt_eq:.0f}% — критический")
+    score, reasons, risks = weighted_score(
+        {
+            "pe": pe or None,
+            "pb": pb or None,
+            "ps": ps or None,
+            "ev_ebitda": ev_ebitda or None,
+            "roe": roe or None,
+            "roa": roa or None,
+            "roic": roic or None,
+            "net_margin": net_margin or None,
+            "div_yield": div_yield or None,
+            "payout": payout or None,
+            "rev_growth": rev_growth or None,
+            "growth_3y": growth_3y or None,
+            "debt_eq": debt_eq or None,
+            "debt_ebitda": debt_ebitda or None,
+            "beta": beta or None,
+        },
+        weights or DEFAULT_WEIGHTS,
+    )
 
     # --- Стресс-режим: дивиденды важнее роста, тилт по сектору и бете ---
     if stress:
@@ -324,7 +279,7 @@ def score_fundamentals(
                 score -= 5
                 risks.append(f"Стресс: высокая бета (β {beta:.2f})")
 
-    score = max(0, min(score, 100))
+    score = int(max(0, min(score, 100)))
 
     if score >= 65:
         action = "Покупать"
@@ -344,22 +299,35 @@ def score_fundamentals(
         forward_dividend_income=forward_dividend or Decimal("0"),
         pe=pe or None,
         pb=pb or None,
+        ps=ps or None,
+        ev_ebitda=ev_ebitda or None,
         roe=roe or None,
+        roa=roa or None,
+        roic=roic or None,
+        net_margin=net_margin or None,
         div_yield=div_yield or None,
         payout=payout or None,
         rev_growth=rev_growth or None,
+        growth_3y=growth_3y or None,
+        growth_5y=growth_5y or None,
         debt_eq=debt_eq or None,
+        debt_ebitda=debt_ebitda or None,
         beta=beta or None,
+        market_cap=market_cap or None,
+        fcf=fcf or None,
+        eps=eps or None,
+        free_float=free_float or None,
     )
 
 
-def _build_recommendation(p: Position, f) -> Recommendation:
+def _build_recommendation(p: Position, f, weights: dict | None = None) -> Recommendation:
     return score_fundamentals(
         ticker=p.ticker,
         name=p.name,
         instrument_type=p.instrument_type,
         f=f,
         forward_dividend=_div_income(p),
+        weights=weights,
     )
 
 

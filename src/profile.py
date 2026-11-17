@@ -149,6 +149,8 @@ class UserProfile:
     rules: Rules = field(default_factory=Rules)
     commission_pct: Decimal = DEFAULT_COMMISSION_PCT
     inflation_pct: Decimal = DEFAULT_INFLATION_PCT
+    # Настройка рейтинга: {метрика: вес}. Пустой dict → дефолтные веса (DEFAULT_WEIGHTS).
+    scoring: dict[str, float] = field(default_factory=dict)
 
     def monthly_total(self) -> Decimal:
         return sum((c.amount for c in self.contributions), Decimal("0"))
@@ -242,6 +244,14 @@ def load_profile(path: Path | None = None) -> UserProfile:
 
     rules = Rules.from_dict(raw["rules"]) if isinstance(raw.get("rules"), dict) else Rules()
 
+    scoring: dict[str, float] = {}
+    if isinstance(raw.get("scoring"), dict):
+        for key, value in raw["scoring"].items():
+            try:
+                scoring[str(key)] = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"невалидный вес метрики «{key}»: {value!r}") from exc
+
     return UserProfile(
         target=target,
         contributions=contributions,
@@ -253,4 +263,5 @@ def load_profile(path: Path | None = None) -> UserProfile:
         rules=rules,
         commission_pct=commission_pct,
         inflation_pct=inflation_pct,
+        scoring=scoring,
     )

@@ -347,6 +347,33 @@ def print_all(report: ReportData, console: Console | None = None):
             )
         console.print(Panel(t, border_style="cyan"))
 
+        # Расширенная аналитика — полные поля StatisticResponse (ADR, фаза 7).
+        t = Table(title="Расширенная аналитика (TTM)", header_style="bold cyan")
+        t.add_column("Инструмент")
+        t.add_column("Капитал., млрд ₽", justify="right")
+        t.add_column("P/S", justify="right")
+        t.add_column("EV/EBITDA", justify="right")
+        t.add_column("ROA %", justify="right")
+        t.add_column("ROIC %", justify="right")
+        t.add_column("Маржа %", justify="right")
+        t.add_column("Долг/EBITDA", justify="right")
+        t.add_column("FCF, млрд ₽", justify="right")
+        t.add_column("EPS", justify="right")
+        for r in recs:
+            t.add_row(
+                f"[bold]{r.ticker}[/bold]",
+                f"{r.market_cap / 1e9:.1f}" if r.market_cap else "—",
+                f"{r.ps:.1f}" if r.ps else "—",
+                f"{r.ev_ebitda:.1f}" if r.ev_ebitda else "—",
+                f"{r.roa:.1f}" if r.roa else "—",
+                f"{r.roic:.1f}" if r.roic else "—",
+                f"{r.net_margin:.1f}" if r.net_margin else "—",
+                f"{r.debt_ebitda:.1f}" if r.debt_ebitda else "—",
+                f"{r.fcf / 1e9:.2f}" if r.fcf else "—",
+                f"{r.eps:.1f}" if r.eps else "—",
+            )
+        console.print(Panel(t, border_style="cyan"))
+
     # --- Аналитика: рекомендации ---
     if recs:
         action_style = {
