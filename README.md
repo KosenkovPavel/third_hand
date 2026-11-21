@@ -4,6 +4,8 @@
 
 **Честный помощник инвестора** для счетов Т-Инвестиций —
 локально, без отправки данных третьим лицам.
+<img width="714" height="271" alt="image" src="https://github.com/user-attachments/assets/d217a793-0744-484b-bb59-7b011ff85326" />
+
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Tests](https://img.shields.io/badge/tests-193%20passed-brightgreen?style=for-the-badge)](#тесты)
