@@ -3,7 +3,14 @@
 from decimal import Decimal
 
 from src.portfolio import Allocation, PortfolioSnapshot, Position
-from src.risk import BOND_CORP, BOND_HY, BOND_OFZ, bond_risk_breakdown, classify_bond
+from src.risk import (
+    BOND_CORP,
+    BOND_HY,
+    BOND_OFZ,
+    bond_risk_breakdown,
+    classify_bond,
+    crisis_buy_signal,
+)
 
 
 class TestClassifyBond:
@@ -62,3 +69,41 @@ class TestBondRiskBreakdown:
     def test_no_bonds(self):
         snap = PortfolioSnapshot(account_id="t", total=Decimal("0"), cash=Decimal("0"))
         assert bond_risk_breakdown(snap) == {}
+
+
+def _closes(points: list[float]) -> list[Decimal]:
+    return [Decimal(str(p)) for p in points]
+
+
+class TestCrisisBuySignal:
+    def test_flat_market_is_normal(self):
+        sig = crisis_buy_signal(_closes([100] * 100))
+        assert sig["state"] == "normal"
+        assert sig["dd_pct"] == Decimal("0.0")
+
+    def test_deep_drawdown_is_crisis(self):
+        sig = crisis_buy_signal(_closes([100] * 50 + [65] * 20))
+        assert sig["state"] == "crisis"
+        assert sig["dd_pct"] == Decimal("-35.0")
+
+    def test_mild_drawdown_is_stress(self):
+        sig = crisis_buy_signal(_closes([100] * 50 + [80] * 20))
+        assert sig["state"] == "stress"
+        assert sig["dd_pct"] == Decimal("-20.0")
+
+    def test_recovery_after_recent_bottom(self):
+        # дно −40% 30 дней назад, восстановление до −12% от пика
+        closes = [100] * 40 + [60] * 30 + [88] * 10
+        sig = crisis_buy_signal(_closes(closes))
+        assert sig["state"] == "recovery"
+
+    def test_no_recovery_if_bottom_long_ago(self):
+        # дно −45% было давно, последние ~3 месяца индекс около −10% от пика —
+        # в окне CRISIS_RECOVERY_WINDOW_DAYS дна нет, режим считается отработанным
+        closes = [100] * 40 + [55] * 20 + [90] * 80
+        sig = crisis_buy_signal(_closes(closes))
+        assert sig["state"] == "normal"
+
+    def test_too_short_history_returns_none(self):
+        assert crisis_buy_signal(_closes([100, 95])) is None
+        assert crisis_buy_signal([]) is None

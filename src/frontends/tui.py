@@ -7,6 +7,7 @@ ASCII-логотип по центру, скроллящийся вывод от
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from functools import partial
@@ -19,8 +20,13 @@ from textual.containers import Horizontal
 from textual.widgets import Button, Header, Input, RichLog, Static
 
 from src import report as report_mod
-from src.metrics import METRICS
-from src.profile import PROFILE_PATH, load_profile, save_profile
+from src.metrics import METRICS, SCORING_PLAIN_OPTIONS, merge_style_weights
+from src.profile import (
+    PROFILE_PATH,
+    STRATEGY_PRESETS,
+    load_profile,
+    save_profile,
+)
 from src.report_builder import ReportError, build_multi_report, build_section
 
 from . import accounts_label, connect, primary_account
@@ -32,6 +38,8 @@ SECTIONS = {
     "ребаланс": ["--rebalance"],
     "прогноз": ["--forecast"],
     "риски": ["--risk"],
+    "стресс": ["--stress-test"],
+    "цель": ["--mc"],
     "рынок": ["--market"],
     "история": ["--history"],
     "календарь": ["--calendar"],
@@ -166,7 +174,7 @@ class ThirdHandApp(App):
             yield Button("Детально", id="btn-mode", variant="primary")
         yield Input(
             placeholder=(
-                "или напиши: рынок · календарь · новости · акции · облигации · выход"
+                "или напиши: рынок · календарь · новости · акции · облигации · настройка · выход"
             ),
             id="input",
         )
@@ -225,7 +233,8 @@ class ThirdHandApp(App):
     def _enter_setup(self) -> None:
         self.setup_mode = True
         self.setup_step = 0
-        self.setup_data = {"target": None, "scoring": None}
+        self.setup_data = {"strategy": None, "target": None,
+                           "scoring_styles": [], "scoring": None}
         self._show_setup_prompt()
 
     def _show_setup_prompt(self) -> None:
@@ -233,23 +242,70 @@ class ThirdHandApp(App):
         out.clear()
         inp = self.query_one("#input", Input)
         if self.setup_step == 0:
-            out.write("[bold]Настройка · шаг 1/2 · целевая структура[/bold]\n\n")
+            out.write("[bold]Настройка · шаг 1/3 · стратегия портфеля[/bold]\n\n")
+            out.write("Чего вы хотите от инвестиций? Выберите подходящее.\n")
+            out.write("[dim]Если сомневаетесь — жмите Enter: вариант 1 лучший по "
+                      "бэктесту 2013–2026 (research/REPORT.md)[/dim]\n\n")
+            for i, preset in enumerate(STRATEGY_PRESETS.values(), 1):
+                out.write(f"  [cyan]{i}[/cyan] · {preset['plain']}\n"
+                          f"      [dim]{preset['label']} · {preset['note']}[/dim]")
+            out.write("  [cyan]0[/cyan] · Своя структура (для тех, кто разбирается)\n")
+            inp.placeholder = "1"
+        elif self.setup_step == 10:  # своя структура: % в акциях
+            out.write("[bold]Настройка · шаг 1/3 · своя структура[/bold]\n\n")
             out.write("Сколько % портфеля держать в [bold]акциях[/bold]?\n")
             out.write("(остальное — облигации)\n\n")
             out.write("[dim]Введи число 0–100 или Enter (по умолчанию 70)[/dim]")
             inp.placeholder = "например: 70"
+        elif self.setup_step == 2:
+            current = self.profile.monthly_total() if self.profile else None
+            out.write("[bold]Настройка · шаг 2/3 · регулярные пополнения[/bold]\n\n")
+            out.write("Сколько ₽ в месяц готовы откладывать?\n")
+            out.write("[dim]Нужно для прогноза и расчёта вычета ИИС — без суммы "
+                      "они будут неточными[/dim]\n\n")
+            if current and current > 0:
+                out.write(f"[dim]Сейчас: {current:.0f} ₽/мес — Enter оставит как есть[/dim]")
+            else:
+                out.write("[dim]Введи сумму или Enter (пропустить)[/dim]")
+            inp.placeholder = "например: 10000"
         elif self.setup_step == 1:
-            out.write("[bold]Настройка · шаг 2/2 · метрики рейтинга[/bold]\n\n")
-            out.write("Какие показатели учитывать в рейтинге компаний?\n")
-            out.write("[dim]Enter — по умолчанию (P/E, дивиденды, ROE, рост, payout, долг)[/dim]\n\n")
+            out.write("[bold]Настройка · шаг 3/3 · какие акции подбирать[/bold]\n\n")
+            out.write("И последнее: какие акции вам ближе?\n")
+            out.write("[dim]Это влияет только на подбор бумаг в разделе «акции». "
+                      "Enter — за вас выберем проверенный набор[/dim]\n\n")
+            for i, option in enumerate(SCORING_PLAIN_OPTIONS, 1):
+                out.write(f"  [cyan]{i}[/cyan] · {option['label']}\n"
+                          f"      [dim]{option['hint']}[/dim]")
+            out.write("  [cyan]0[/cyan] · Экспертный режим (выбор метрик вручную)\n")
+            inp.placeholder = "1"
+        elif self.setup_step == 11:  # свой набор метрик (сырой список)
+            out.write("[bold]Настройка · шаг 3/3 · свои метрики[/bold]\n\n")
+            out.write("Какие показатели учитывать в рейтинге компаний?\n\n")
             for key, m in METRICS.items():
                 out.write(f"  [cyan]{key}[/cyan] · {m.label} — {m.description}")
-            inp.placeholder = "Enter = по умолчанию, или: pe, div_yield, roe"
+            inp.placeholder = "например: pe, div_yield, roe"
 
     def _handle_setup_input(self, text: str) -> None:
         text = text.strip()
         out = self.query_one("#output", RichLog)
         if self.setup_step == 0:
+            keys = list(STRATEGY_PRESETS)
+            choice = text or "1"
+            if choice in ("0", "своя"):
+                self.setup_step = 10
+                self._show_setup_prompt()
+                return
+            if not choice.isdigit() or not 1 <= int(choice) <= len(keys):
+                out.write(f"[red]Введи номер от 0 до {len(keys)}[/red]")
+                return
+            key = keys[int(choice) - 1]
+            self.setup_data["strategy"] = key
+            self.setup_data["target"] = dict(STRATEGY_PRESETS[key]["target"])
+            self.setup_step = 2
+            self._show_setup_prompt()
+            return
+
+        if self.setup_step == 10:
             try:
                 stocks = int(text) if text else 70
                 if not 0 <= stocks <= 100:
@@ -257,12 +313,42 @@ class ThirdHandApp(App):
             except ValueError:
                 out.write("[red]Введи целое число 0–100[/red]")
                 return
+            self.setup_data["strategy"] = "custom"
             self.setup_data["target"] = {"Акции": stocks, "Облигации": 100 - stocks}
+            self.setup_step = 2
+            self._show_setup_prompt()
+            return
+
+        if self.setup_step == 2:
+            if text:
+                try:
+                    amount = int(text.replace(" ", "").replace("₽", ""))
+                    if amount <= 0:
+                        raise ValueError
+                except ValueError:
+                    out.write("[red]Введи сумму в рублях, например 10000 (или Enter)[/red]")
+                    return
+                self.setup_data["contributions"] = [{"day": 1, "amount": amount}]
             self.setup_step = 1
             self._show_setup_prompt()
             return
 
         if self.setup_step == 1:
+            choice = text or "1"
+            if choice in ("0", "эксперт"):
+                self.setup_step = 11
+                self._show_setup_prompt()
+                return
+            if not choice.isdigit() or not 1 <= int(choice) <= len(SCORING_PLAIN_OPTIONS):
+                out.write(f"[red]Введи номер от 0 до {len(SCORING_PLAIN_OPTIONS)}[/red]")
+                return
+            styles = SCORING_PLAIN_OPTIONS[int(choice) - 1]["styles"]
+            self.setup_data["scoring_styles"] = styles
+            self.setup_data["scoring"] = merge_style_weights(styles)
+            self._finish_setup()
+            return
+
+        if self.setup_step == 11:
             if text:
                 keys = [k.strip() for k in text.replace(";", ",").split(",") if k.strip()]
                 unknown = [k for k in keys if k not in METRICS]
@@ -274,7 +360,20 @@ class ThirdHandApp(App):
             self._finish_setup()
 
     def _finish_setup(self) -> None:
-        data = {"target": self.setup_data["target"]}
+        # Сохраняем остальные поля существующего профиля (contributions, iis,
+        # rules, goals…): визард отвечает только за strategy/target/scoring.
+        data: dict = {}
+        if PROFILE_PATH.exists():
+            try:
+                data = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                data = {}
+        data["strategy"] = self.setup_data["strategy"]
+        data["target"] = self.setup_data["target"]
+        if self.setup_data.get("contributions"):
+            data["contributions"] = self.setup_data["contributions"]
+        if self.setup_data.get("scoring_styles"):
+            data["scoring_styles"] = self.setup_data["scoring_styles"]
         if self.setup_data.get("scoring"):
             data["scoring"] = self.setup_data["scoring"]
         save_profile(data, PROFILE_PATH)
@@ -287,7 +386,11 @@ class ThirdHandApp(App):
         out.write(
             "Целевая структура: "
             + "; ".join(f"{k} {v:.0f}%" for k, v in self.profile.target.items())
-            + "\n\n"
+            + "\n"
+        )
+        out.write(
+            "[dim]Это не навсегда: поменять можно в любой момент командой "
+            "«настройка» или правкой data/profile.json[/dim]\n\n"
         )
         out.write("Загружаю портфель…")
         self._start_background_load()
@@ -301,6 +404,9 @@ class ThirdHandApp(App):
             return
         if choice in ("выход", "exit", "quit", "q"):
             self.exit()
+            return
+        if choice == "настройка":
+            self._enter_setup()
             return
         if choice not in SECTIONS:
             self.query_one("#output", RichLog).write(

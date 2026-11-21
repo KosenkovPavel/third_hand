@@ -47,6 +47,75 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "debt_eq": 5,
 }
 
+# Стили скрининга для визарда первого запуска: пользователь выбирает, на что
+# ориентироваться при подборе акций; итоговые веса — среднее выбранных стилей.
+# «balanced» — дефолт («самое важное»: цена, дивиденды, качество, рост, долг).
+SCORING_STYLES: dict[str, dict] = {
+    "balanced": {"label": "Сбалансированный", "weights": DEFAULT_WEIGHTS},
+    "dividend": {
+        "label": "Дивидендный",
+        "weights": {"div_yield": 35, "payout": 20, "pe": 15, "roe": 15,
+                    "debt_eq": 10, "beta": 5},
+    },
+    "value": {
+        "label": "Недооценка",
+        "weights": {"pe": 30, "pb": 20, "ps": 15, "ev_ebitda": 20, "debt_eq": 15},
+    },
+    "quality": {
+        "label": "Качество",
+        "weights": {"roe": 25, "roic": 25, "net_margin": 15, "growth_3y": 20,
+                    "debt_eq": 15},
+    },
+    "growth": {
+        "label": "Рост",
+        "weights": {"rev_growth": 30, "growth_3y": 30, "roe": 15, "pe": 15,
+                    "net_margin": 10},
+    },
+    "calm": {
+        "label": "Спокойствие",
+        "weights": {"beta": 30, "div_yield": 20, "debt_eq": 20, "payout": 15,
+                    "roe": 15},
+    },
+}
+DEFAULT_SCORING_STYLE = "balanced"
+
+# Бытовые варианты шага «скрининг» в визарде: пользователь выбирает намерение,
+# а не метрики. Порядок списка = нумерация на экране (Enter = первый вариант).
+SCORING_PLAIN_OPTIONS: list[dict] = [
+    {
+        "label": "Не знаю / выбирайте за меня (рекомендуем)",
+        "hint": "проверенный набор: недорогие, с дивидендами, качественные, растущие компании",
+        "styles": ["balanced"],
+    },
+    {
+        "label": "Чтобы регулярно платили",
+        "hint": "дивидендные акции",
+        "styles": ["dividend"],
+    },
+    {
+        "label": "Дёшево и надёжно",
+        "hint": "недооценённые качественные компании",
+        "styles": ["value", "quality"],
+    },
+    {
+        "label": "Рост любой ценой",
+        "hint": "быстрорастущие компании, может быть дорого",
+        "styles": ["growth"],
+    },
+]
+
+
+def merge_style_weights(styles: list[str]) -> dict[str, float]:
+    """Среднее весов выбранных стилей (взвешенный скоринг сам нормирует)."""
+    chosen = [SCORING_STYLES[s]["weights"] for s in styles if s in SCORING_STYLES]
+    if not chosen:
+        return dict(DEFAULT_WEIGHTS)
+    merged: dict[str, float] = {}
+    for weights in chosen:
+        for key, value in weights.items():
+            merged[key] = merged.get(key, 0.0) + value / len(chosen)
+    return merged
+
 
 def metric_score(metric: str, value: float) -> tuple[float, str, str]:
     """Баллы 0–100 для значения метрики + причина + риск.

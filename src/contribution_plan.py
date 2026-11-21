@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_FLOOR
 
-from .portfolio import Allocation, PortfolioSnapshot
+from .money import to_decimal
+from .portfolio import (
+    CLASS_ETF_TICKERS,
+    Allocation,
+    PortfolioSnapshot,
+)
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,52 @@ def build_contribution_plan(
     elif plan.unallocated > 0:
         plan.notes.append("Остаток не распределён из-за размера лотов, целевой структуры или лимитов")
     return plan
+
+
+def load_default_candidates(client, target, issues: list[str] | None = None) -> list[PurchaseCandidate]:
+    """Кандидаты «исполнения по умолчанию»: индексные ETF из реестра
+    ``CLASS_ETF_TICKERS`` для каждого целевого класса. Позволяют исполнить
+    стратегию даже с пустого портфеля (кандидаты из текущих позиций идут
+    первыми за счёт score > 0). Недоступные инструменты пропускаются с
+    пометкой в ``issues``.
+    """
+    candidates = []
+    for asset_class, tickers in CLASS_ETF_TICKERS.items():
+        if asset_class not in target:
+            continue
+        for ticker in tickers:
+            try:
+                instr = client.find_instrument(query=ticker, ticker=ticker)
+                if instr is None:
+                    if issues is not None:
+                        issues.append(f"{ticker}: индексный ETF не найден — класс «{asset_class}» докупите вручную")
+                    continue
+                price = Decimal("0")
+                try:
+                    resp = client.get_last_prices([instr.figi])
+                    for p in resp.last_prices:
+                        if p.price is not None:
+                            price = to_decimal(p.price)
+                except Exception as exc:  # noqa: BLE001
+                    if issues is not None:
+                        issues.append(f"{ticker}: цена не загружена ({exc})")
+                    continue
+                if price <= 0:
+                    continue
+                candidates.append(
+                    PurchaseCandidate(
+                        ticker=instr.ticker,
+                        name=instr.name,
+                        asset_class=asset_class,
+                        instrument_uid=instr.uid,
+                        price=price,
+                        lot=int(getattr(instr, "lot", 1) or 1),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                if issues is not None:
+                    issues.append(f"{ticker}: не удалось загрузить инструмент ({exc})")
+    return candidates
 
 
 def load_purchase_candidates(
