@@ -74,6 +74,10 @@ class ReportData:
     picks: list[Pick] | None = None
     news_events: list[NewsEvent] | None = None
     goal_report: GoalReport | None = None
+    crisis_signal: dict | None = None  # состояние «кризисного откупа» по IMOEX
+    self_validation: dict | None = None  # трек-рекорд советника (hit rate, журнал сигнала)
+    stress_test: list | None = None  # повтор кризисов на портфеле (CrisisReplay)
+    mc_goals: list | None = None  # Монте-Карло по целям (GoalMonteCarlo)
     stress: bool = False
     usdrub: Decimal | None = None
     key_rate: Decimal | None = None

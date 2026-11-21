@@ -100,3 +100,32 @@ def test_immature_recommendation_makes_no_api_calls():
         action="Покупать",
     )
     assert evaluate_recommendations(None, [entry], today=date(2025, 1, 2)) == []
+
+
+def _outcome(excess: str, horizon: int = 90):
+    from src.recommendation_history import RecommendationOutcome
+    return RecommendationOutcome(
+        ticker="X", recommendation_date="2026-01-01", evaluation_date="2026-04-01",
+        horizon_days=horizon, action="Покупать", score=70,
+        return_pct=Decimal("0"), benchmark_pct=Decimal("0"),
+        excess_pct=Decimal(excess),
+    )
+
+
+class TestHitRateSummary:
+    def test_few_outcomes_is_honest_no_data(self):
+        from src.recommendation_history import hit_rate_summary
+        s = hit_rate_summary([_outcome("5"), _outcome("3")])
+        assert s["status"] == "мало данных"
+        assert s["matured"] == 2
+
+    def test_hit_rate_and_avg(self):
+        from src.recommendation_history import hit_rate_summary
+        outcomes = [_outcome("5"), _outcome("3"), _outcome("-2"),
+                    _outcome("1"), _outcome("-4"), _outcome("2")]
+        s = hit_rate_summary(outcomes)
+        assert s["status"] == "ok"
+        assert s["wins"] == 4
+        assert s["hit_rate_pct"] == Decimal("66.7")
+        assert s["avg_excess_pct"] == Decimal("0.83")
+        assert s["by_horizon"][90] == {"total": 6, "wins": 4}

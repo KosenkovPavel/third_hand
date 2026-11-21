@@ -1,8 +1,11 @@
 {
   "_comment": "Шаблон профиля: скопируй в profile.json и поправь под себя. Поля emergency_fund_ok/usdrub_alert/goals необязательны.",
+  "_comment_strategy": "strategy — ключ пресета из STRATEGY_PRESETS (src/profile.py): balanced (50/30/20 акции/облигации/золото), classic (70/30), conservative (risk parity), aggressive (100% акции), income (30/60/10) или custom (тогда target задаётся вручную). При первом запуске TUI-визард предложит выбрать.",
+  "strategy": "balanced",
   "target": {
-    "Акции": 70,
-    "Облигации": 30
+    "Акции": 50,
+    "Облигации": 30,
+    "Золото": 20
   },
   "contributions": [
     {"day": 5, "amount": 5000},
@@ -30,10 +33,14 @@
     "max_sector_pct": 30
   },
   "_comment_scoring": "Необязательно: веса метрик рейтинга компаний (взвешенное среднее, 0 = не учитывать). Доступные метрики: pe, pb, ps, ev_ebitda, roe, roa, roic, net_margin, div_yield, payout, rev_growth, growth_3y, debt_eq, debt_ebitda, beta. Без секции — дефолтные веса (P/E, дивиденды, ROE, рост, payout, долг).",
+  "_comment_scoring_styles": "Необязательно: ключи стилей из SCORING_STYLES (src/metrics.py): balanced, dividend, value, quality, growth, calm. Визард усредняет веса выбранных стилей в секцию scoring; здесь — только для чтения.",
+  "scoring_styles": ["balanced"],
   "scoring": {
-    "pe": 20,
-    "div_yield": 30,
+    "pe": 25,
+    "div_yield": 25,
     "roe": 15,
-    "debt_eq": 10
+    "rev_growth": 10,
+    "payout": 10,
+    "debt_eq": 5
   }
 }

@@ -22,6 +22,41 @@ INSTRUMENT_TYPE_NAMES = {
 
 EXCHANGE = "Московская биржа"
 
+GOLD_CLASS = "Золото"
+
+# Индексные ETF по классам активов (порядок = приоритет кандидата на докупку).
+# Это «исполнение по умолчанию»: целевой класс можно купить одним инструментом
+# даже с пустого портфеля. Пополнять по мере появления фондов на MOEX.
+CLASS_ETF_TICKERS: dict[str, tuple[str, ...]] = {
+    "Акции": ("TMOS", "EQMX", "SBMX"),
+    "Облигации": ("SUGB", "SBGB", "VTBB"),
+    GOLD_CLASS: ("TGLD", "AKGD"),
+}
+
+# Золотые биржевые фонды (оставлено для обратной совместимости импортов).
+GOLD_ETF_TICKERS = frozenset(CLASS_ETF_TICKERS[GOLD_CLASS])
+
+_ETF_CLASS_BY_TICKER = {
+    ticker: cls for cls, tickers in CLASS_ETF_TICKERS.items() for ticker in tickers
+}
+
+
+def classify_position(ticker: str, instrument_type: str, default_type_name: str) -> str:
+    """Известные индексные ETF и фьючерсы на золото относим к их классу
+    («Акции»/«Облигации»/«Золото»), а не к «ETF»/«Фьючерсы» — иначе целевая
+    структура и исполнение через ETF не сходятся между собой."""
+    t = (ticker or "").upper()
+    if t in _ETF_CLASS_BY_TICKER:
+        return _ETF_CLASS_BY_TICKER[t]
+    if instrument_type == "future" and t.startswith(("GLD", "GOLD")):
+        return GOLD_CLASS
+    return default_type_name
+
+
+def classify_gold(ticker: str, instrument_type: str, default_type_name: str) -> str:
+    """Устаревший алиас classify_position (оставлен для совместимости)."""
+    return classify_position(ticker, instrument_type, default_type_name)
+
 
 @dataclass
 class Position:

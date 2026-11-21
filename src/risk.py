@@ -13,6 +13,14 @@ INSTRUMENT_ALERT_PCT = 25
 SECTOR_ALERT_PCT = 40
 HY_BOND_ALERT_PCT = 10  # доля ВДО в портфеле для сигнала
 
+# Пороги «кризисного откупа» из бэктеста (research/REPORT.md, факторный анализ
+# 1997–2026): после просадки индекса > 30% от 12-мес максимума средняя доходность
+# акций за следующие 12 мес исторически ~+100% (статзначимо). Выход из режима —
+# восстановление выше −15%.
+CRISIS_BUY_DD_PCT = Decimal("-30")
+CRISIS_EXIT_DD_PCT = Decimal("-15")
+CRISIS_RECOVERY_WINDOW_DAYS = 63  # ~3 месяца торговых дней для поиска недавнего дна
+
 # категории облигаций по кредитному риску
 BOND_OFZ = "ОФЗ"
 BOND_CORP = "Корпоративные"
@@ -42,6 +50,41 @@ def bond_risk_breakdown(snapshot: PortfolioSnapshot) -> dict[str, Decimal]:
         cat = classify_bond(p.ticker, p.name, p.bond_risk)
         out[cat] = out.get(cat, Decimal("0")) + p.amount
     return out
+
+
+def crisis_buy_signal(closes: list[Decimal]) -> dict | None:
+    """Состояние «кризисного откупа» по дневным закрытиям индекса за ~12 мес.
+
+    Правило из бэктеста (research/REPORT.md): просадка от 12-мес максимума
+    глубже CRISIS_BUY_DD_PCT — сигнал направлять взносы в акции; восстановление
+    выше CRISIS_EXIT_DD_PCT после недавнего дна — выход из режима.
+    Возвращает ``{"state", "dd_pct"}`` (state: crisis/stress/recovery/normal)
+    или None при нехватке данных.
+    """
+    closes = [c for c in closes if c and c > 0]
+    if len(closes) < 20:
+        return None
+    peak = closes[0]
+    peak_all = peak
+    min_dd_recent = Decimal("0")
+    dds: list[Decimal] = []
+    for i, close in enumerate(closes):
+        peak_all = max(peak_all, close)
+        dd = (close / peak_all - 1) * 100
+        dds.append(dd)
+        if i >= len(closes) - CRISIS_RECOVERY_WINDOW_DAYS:
+            min_dd_recent = min(min_dd_recent, dd)
+    current = dds[-1]
+    if current <= CRISIS_BUY_DD_PCT:
+        state = "crisis"
+    elif current > CRISIS_EXIT_DD_PCT and min_dd_recent <= CRISIS_BUY_DD_PCT:
+        state = "recovery"
+    elif current <= CRISIS_EXIT_DD_PCT:
+        state = "stress"
+    else:
+        state = "normal"
+    return {"state": state, "dd_pct": current.quantize(Decimal("0.1")),
+            "close": closes[-1], "peak": peak_all}
 
 
 def rule_signals(

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import calendar as _calendar
+from datetime import date
 from decimal import Decimal
 
 from src import __version__
@@ -19,8 +21,25 @@ from src.report_builder import ReportError, build_multi_report, fmt_money
 from . import connect
 
 
+def _next_contribution_date(profile, today: date) -> date | None:
+    """Ближайшая дата взноса (день месяца из profile.contributions) от today."""
+    days = sorted({c.day for c in profile.contributions if c.day > 0})
+    if not days:
+        return None
+    candidates = []
+    for m_off in (0, 1):
+        mm = today.month + m_off
+        yy = today.year + (mm - 1) // 12
+        mm = (mm - 1) % 12 + 1
+        last = _calendar.monthrange(yy, mm)[1]
+        candidates.extend(date(yy, mm, min(d, last)) for d in days)
+    future = [d for d in candidates if d >= today]
+    return min(future) if future else None
+
+
 def _telegram_summary(report, cbr_rate: Decimal | None, usdrub: Decimal | None) -> str:
-    """Краткая сводка для Telegram: итог портфеля, ребаланс пополнения, макро."""
+    """Краткая сводка для Telegram: итог портфеля, ребаланс пополнения, макро,
+    сигнал откупа, ближайший взнос и отклонение структуры («действовать ли»)."""
     snapshot = report.snapshot
     profile = report.profile
     pnl = snapshot.total_pnl
@@ -29,6 +48,14 @@ def _telegram_summary(report, cbr_rate: Decimal | None, usdrub: Decimal | None) 
         "Третья рука: сводка",
         f"Портфель: {fmt_money(snapshot.total)} (P&L {fmt_money(pnl)}, {pnl_pct:+.2f}%)",
     ]
+    crisis = getattr(report, "crisis_signal", None)
+    if crisis and crisis.get("state") in ("crisis", "recovery", "stress"):
+        note = {
+            "crisis": "РЕЖИМ ОТКУПА: взносы направляйте в акции до 65–75%",
+            "recovery": "выход из режима откупа: вернитесь к целевой структуре",
+            "stress": f"индекс {crisis['dd_pct']:.1f}% от годового максимума — правило откупа пока не активно (−30%)",
+        }[crisis["state"]]
+        lines.append(f"Сигнал: {note}")
     try:
         contrib = (
             profile.contributions[0].amount if profile.contributions else Decimal("5000")
@@ -49,6 +76,19 @@ def _telegram_summary(report, cbr_rate: Decimal | None, usdrub: Decimal | None) 
             lines.append(f"Пополнение {fmt_money(contrib)}: " + ", ".join(buys))
     except Exception:  # noqa: BLE001
         pass
+    next_date = _next_contribution_date(profile, date.today()) if profile else None
+    if next_date is not None:
+        delta = (next_date - date.today()).days
+        lines.append(f"Ближайший взнос: {next_date:%d.%m} (через {delta} дн.)")
+    if profile and snapshot.total:
+        actual = {a.asset_class: a.amount for a in snapshot.allocation}
+        deviations = []
+        for cls in set(actual) | set(profile.target):
+            dev = actual.get(cls, Decimal("0")) / snapshot.total * 100 - profile.target.get(cls, Decimal("0"))
+            if abs(dev) > 5:
+                deviations.append(f"{cls} {dev:+.1f} п.п.")
+        if deviations:
+            lines.append("Отклонение структуры: " + ", ".join(deviations) + " — пора ребалансировать")
     macro = []
     if usdrub is not None:
         macro.append(f"USD/RUB {usdrub:.2f} ₽")
@@ -142,6 +182,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Стресс-режим подбора акций: тилт в защитные сектора, дивиденды и низкую бету "
         "(также включается настройкой «stress» в data/profile.json)",
+    )
+    parser.add_argument(
+        "--stress-test",
+        action="store_true",
+        help="Стресс-тест: повтор кризисов 2008/2014/2020/2022 на текущем портфеле",
+    )
+    parser.add_argument(
+        "--mc",
+        action="store_true",
+        help="Монте-Карло: вероятность достижения целей из профиля (bootstrap по истории 2013+)",
     )
     parser.add_argument("--version", action="version", version=f"Третья рука {__version__}")
     parser.add_argument(

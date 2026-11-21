@@ -30,7 +30,7 @@ from .market import MarketOpinion
 from .news import NewsEvent
 from .picks import Pick
 from .portfolio import PortfolioSnapshot
-from .profile import UserProfile
+from .profile import STRATEGY_PRESETS, UserProfile
 from .rebalance import RebalancePlan
 from .recommendation_history import RecommendationOutcome
 from .report_data import ReportData
@@ -112,6 +112,7 @@ def print_all(report: ReportData, console: Console | None = None):
     history_flows = report.history_flows
     bond_rows = report.bond_rows
     picks = report.picks
+    crisis_signal = report.crisis_signal
     news_events = report.news_events
     goal_report = report.goal_report
     profile = report.profile
@@ -132,6 +133,8 @@ def print_all(report: ReportData, console: Console | None = None):
         t = Table(show_header=False, box=None, title="Профиль", title_justify="left")
         t.add_column("Параметр", style="bold cyan")
         t.add_column("Значение")
+        if profile.strategy and profile.strategy in STRATEGY_PRESETS:
+            t.add_row("Стратегия", STRATEGY_PRESETS[profile.strategy]["label"])
         t.add_row("Целевая структура", "; ".join(f"{k} {v:.0f}%" for k, v in profile.target.items()))
         if profile.contributions:
             rules = ", ".join(
@@ -431,6 +434,82 @@ def print_all(report: ReportData, console: Console | None = None):
                 f"[dim]Журнал рекомендаций: {recommendation_entries_count} записей. "
                 "Сравнение с IMOEX появится через 90, 180 и 365 дней.[/dim]"
             )
+
+    # --- Самопроверка: трек-рекорд советника ---
+    sv = report.self_validation
+    if sv and (sv.get("recommendations") or sv.get("crisis_journal")):
+        t = Table(title="Самопроверка: наш трек-рекорд", show_header=False, box=None)
+        rec = sv.get("recommendations")
+        if rec and rec.get("status") == "ok":
+            t.add_row(
+                f"Рекомендации акций: обогнали IMOEX {rec['wins']} из {rec['matured']} "
+                f"(hit rate {rec['hit_rate_pct']:.0f}%, средний эксцесс {rec['avg_excess_pct']:+.2f} п.п.)"
+            )
+        elif rec:
+            t.add_row(
+                f"Рекомендации акций: созрело {rec['matured']} исходов из {rec['needed']} "
+                "нужных — hit rate покажем, когда накопится статистика"
+            )
+        cj = sv.get("crisis_journal")
+        if cj:
+            if cj.get("matured"):
+                t.add_row(
+                    f"Сигнал откупа: {cj['matured']} созревших записей, "
+                    f"в плюсе по IMOEX — {cj['wins']}"
+                )
+            elif cj.get("first_date"):
+                t.add_row(
+                    f"Сигнал откупа: журнал ведётся с {cj['first_date']}, "
+                    "оценка появится через 90 дней после первого «crisis»"
+                )
+            else:
+                t.add_row("Сигнал откупа: журнал пуст — начнём считать с первого сигнала")
+        console.print(Panel(t, border_style="cyan"))
+
+    # --- Стресс-тест: повтор кризисов на портфеле ---
+    if report.stress_test:
+        t = Table(
+            title="Стресс-тест: повтор кризисов на вашем портфеле",
+            header_style="bold red",
+        )
+        t.add_column("Кризис")
+        t.add_column("Ваш портфель", justify="right")
+        t.add_column("Стратегия 50/30/20", justify="right")
+        t.add_column("Покрытие", justify="right")
+        for cr in report.stress_test:
+            port = (f"{cr.portfolio_return_pct:+.1f}%"
+                    if cr.portfolio_return_pct is not None else "нет данных")
+            tgt = (f"{cr.target_return_pct:+.1f}%"
+                   if cr.target_return_pct is not None else "—")
+            t.add_row(cr.name, port, tgt, f"{cr.covered_pct:.0f}%")
+        console.print(Panel(
+            t, border_style="red",
+            subtitle="По дневным ценам, без купонов и дивидендов — иллюстрация, не прогноз",
+        ))
+
+    # --- Монте-Карло: вероятность целей ---
+    if report.mc_goals:
+        t = Table(
+            title="Монте-Карло: шансы достичь цели (реальные, сегодняшние ₽)",
+            header_style="bold cyan",
+        )
+        t.add_column("Цель")
+        t.add_column("Сумма", justify="right")
+        t.add_column("Горизонт", justify="right")
+        t.add_column("Пессимист", justify="right")
+        t.add_column("Медиана", justify="right")
+        t.add_column("Оптимист", justify="right")
+        t.add_column("P(успех)", justify="right")
+        for mc in report.mc_goals:
+            t.add_row(
+                mc.name, _money(mc.target), f"{mc.years} г.",
+                _money(mc.p5), _money(mc.p50), _money(mc.p95),
+                f"{mc.p_success:.0f}%",
+            )
+        console.print(Panel(
+            t, border_style="cyan",
+            subtitle="bootstrap 500 путей по истории 2013+ — распределение сценариев, не обещание",
+        ))
 
     # --- Ребалансировка ---
     if rebalance_plan and rebalance_plan.recommendations:
@@ -1078,6 +1157,25 @@ def print_all(report: ReportData, console: Console | None = None):
 
     # --- Сигналы ---
     signals: list[str] = []
+    if crisis_signal:
+        dd = crisis_signal["dd_pct"]
+        state = crisis_signal["state"]
+        if state == "crisis":
+            signals.append(
+                f"Кризисный откуп: индекс {dd:.1f}% от годового максимума. "
+                "Правило из бэктеста: взносы направляйте в акции до 65–75% "
+                "(после таких просадок индекс исторически прибавлял ~100% за 12 мес)"
+            )
+        elif state == "recovery":
+            signals.append(
+                f"Выход из режима откупа: индекс {dd:.1f}% от годового "
+                "максимума — возвращайте взносы к целевой структуре"
+            )
+        elif state == "stress":
+            signals.append(
+                f"Индекс {dd:.1f}% от годового максимума — режим откупа "
+                "пока не активен (включается при просадке глубже −30%)"
+            )
     if profile:
         signals.extend(rule_signals(snapshot, profile.rules, sector_by_uid))
     if profile and snapshot.total:

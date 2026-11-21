@@ -15,7 +15,11 @@ from .accounting import Accountant, merge_accounting
 from .analytics import analyze, apply_portfolio_rules
 from .bonds import BondFilters, bond_screen
 from .calendar import build_calendar
-from .contribution_plan import build_contribution_plan, load_purchase_candidates
+from .contribution_plan import (
+    build_contribution_plan,
+    load_default_candidates,
+    load_purchase_candidates,
+)
 from .forecast import balance_at, forecast, forecast_scenarios
 from .goals import build_goal_report, evaluate_goal
 from .history import load_history, time_weighted_return
@@ -32,13 +36,21 @@ from .iis import (
 from .macro import deposit_return_pct
 from .macro import key_rate as cbr_key_rate
 from .market import build_market_opinion
+from .money import to_decimal
+from .montecarlo import monte_carlo_goals
 from .news import build_news_background
 from .picks import PickFilters, pick_stocks
 from .portfolio import merge_snapshots
 from .rebalance import calculate_rebalance
-from .recommendation_history import evaluate_recommendations, load_recommendations
+from .recommendation_history import (
+    evaluate_recommendations,
+    hit_rate_summary,
+    load_recommendations,
+)
 from .report_data import ReportData
-from .risk import calculate_risks, load_sectors
+from .risk import calculate_risks, crisis_buy_signal, load_sectors
+from .signal_journal import journal_summary, load_journal, record_signal
+from .stress_test import replay_portfolio
 from .screener import ScreenFilters, screen
 from .simulation import simulate_index_contributions
 from .providers.tinkoff import ACCOUNT_TYPE_IIS, TinkoffClient
@@ -93,11 +105,28 @@ def build_report(
     def _operations(window_from: datetime):
         return Accountant(client, account_id).report(from_=window_from, to=to)
 
+    def _crisis_signal():
+        try:
+            imoex_uid = client.find_instrument_uid("IMOEX", "IMOEX")
+            if not imoex_uid:
+                return None
+            end = datetime.now(timezone.utc)
+            candles = client.get_candles(
+                imoex_uid, end - timedelta(days=380), end, client.daily_interval()
+            ).candles
+            return crisis_buy_signal(
+                [to_decimal(c.close) for c in candles if c.close is not None]
+            )
+        except Exception as exc:  # noqa: BLE001
+            data_warnings.append(f"Сигнал откупа кризиса: IMOEX недоступен ({exc})")
+            return None
+
     tasks = {
         "key_rate": cbr_key_rate,
         "sectors": lambda: load_sectors(client),
         "usd_rub": client.usd_rub,
         "rgbi": client.rgbi,
+        "crisis_signal": _crisis_signal,
     }
     if snapshot is None:
         tasks["snapshot"] = _snapshot
@@ -117,6 +146,18 @@ def build_report(
         sector_by_uid = futures["sectors"].result()
         usdrub = futures["usd_rub"].result()
         rgbi = futures["rgbi"].result()
+        crisis_signal = futures["crisis_signal"].result()
+
+    # Журнал самопроверки: фиксируем сигнал (дедуп по дате) и оцениваем
+    # созревшие записи по текущему закрытию IMOEX.
+    signal_validation = None
+    if crisis_signal:
+        try:
+            record_signal(crisis_signal["state"], crisis_signal["dd_pct"],
+                          crisis_signal["close"])
+            signal_validation = journal_summary(load_journal(), crisis_signal["close"])
+        except Exception as exc:  # noqa: BLE001
+            data_warnings.append(f"Журнал сигналов недоступен ({exc})")
 
     # Для XIRR и «внесено/рост» — операции за всю жизнь счёта, если дата открытия известна.
     full_window = opened is not None
@@ -199,6 +240,16 @@ def build_report(
             beta_by_ticker={r.ticker: r.beta for r in recommendations},
         )
 
+    stress_test = None
+    if getattr(args, "stress_test", False):
+        console.print("Проигрываю кризисы 2008–2022 на портфеле (свечи)...")
+        stress_test = replay_portfolio(client, snapshot, issues=data_warnings)
+
+    mc_goals = None
+    if getattr(args, "mc", False) and profile.goals:
+        console.print("Монте-Карло по целям (bootstrap по истории)...")
+        mc_goals = monte_carlo_goals(snapshot, profile)
+
     market_opinion = None
     if args.market:
         console.print("Собираю мнение рынка (аналитики, инсайдеры, RSI)...")
@@ -229,6 +280,7 @@ def build_report(
             candidates = load_purchase_candidates(
                 client, snapshot, recommendations, sector_by_uid, issues=data_warnings
             )
+            candidates += load_default_candidates(client, target, issues=data_warnings)
             contribution_plan = build_contribution_plan(
                 snapshot,
                 candidates,
@@ -257,6 +309,7 @@ def build_report(
     index_simulation = None
     recommendation_entries = []
     recommendation_outcomes = None
+    hit_rate = None
     if args.history:
         history_points = load_history()
         if not history_points:
@@ -284,6 +337,7 @@ def build_report(
         recommendation_outcomes = evaluate_recommendations(
             client, recommendation_entries, issues=data_warnings
         )
+        hit_rate = hit_rate_summary(recommendation_outcomes)
 
     screen_rows = None
     if args.screen:
@@ -454,6 +508,13 @@ def build_report(
         if not rss_ok and news_events:
             console.print("[dim]RSS-лента недоступна — внешние новости пропущены.[/dim]")
 
+    self_validation = None
+    if hit_rate or signal_validation:
+        self_validation = {
+            "recommendations": hit_rate,
+            "crisis_journal": signal_validation,
+        }
+
     return ReportData(
         snapshot=snapshot,
         acct=acct,
@@ -497,6 +558,10 @@ def build_report(
         usdrub=usdrub,
         key_rate=cbr_rate,
         rgbi=rgbi,
+        crisis_signal=crisis_signal,
+        self_validation=self_validation,
+        stress_test=stress_test,
+        mc_goals=mc_goals,
         deposit_pct=deposit_pct,
         data_warnings=data_warnings,
     )
@@ -599,6 +664,7 @@ def build_section(
         candidates = load_purchase_candidates(
             client, snapshot, base.recommendations, base.sector_by_uid, issues=issues
         )
+        candidates += load_default_candidates(client, target, issues=issues)
         contribution_plan = build_contribution_plan(
             snapshot,
             candidates,
@@ -643,6 +709,13 @@ def build_section(
             beta_by_ticker={r.ticker: r.beta for r in base.recommendations},
         )
         return replace(base, risks=risk_report)
+
+    if section == "стресс":
+        replays = replay_portfolio(client, snapshot, issues=issues)
+        return replace(base, stress_test=replays)
+
+    if section == "цель":
+        return replace(base, mc_goals=monte_carlo_goals(snapshot, profile))
 
     if section == "история":
         history_points = load_history()

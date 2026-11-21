@@ -186,3 +186,32 @@ def evaluate_recommendations(
         )
     outcomes.sort(key=lambda outcome: (outcome.evaluation_date, outcome.ticker), reverse=True)
     return outcomes
+
+
+MIN_MATURED_FOR_RATE = 5  # меньше — hit rate не считаем, честно «мало данных»
+
+
+def hit_rate_summary(outcomes: list[RecommendationOutcome]) -> dict:
+    """Сводка самопроверки: доля рекомендаций, обогнавших IMOEX, средний эксцесс
+    и разбивка по горизонтам. Меньше MIN_MATURED_FOR_RATE исходов — «мало данных»."""
+    if len(outcomes) < MIN_MATURED_FOR_RATE:
+        return {"status": "мало данных", "matured": len(outcomes),
+                "needed": MIN_MATURED_FOR_RATE}
+    wins = sum(1 for o in outcomes if o.excess_pct > 0)
+    avg = sum((o.excess_pct for o in outcomes), Decimal("0")) / len(outcomes)
+    by_horizon = {}
+    for horizon in HORIZON_DAYS:
+        sub = [o for o in outcomes if o.horizon_days == horizon]
+        if sub:
+            by_horizon[horizon] = {
+                "total": len(sub),
+                "wins": sum(1 for o in sub if o.excess_pct > 0),
+            }
+    return {
+        "status": "ok",
+        "matured": len(outcomes),
+        "wins": wins,
+        "hit_rate_pct": (Decimal(wins) / len(outcomes) * 100).quantize(Decimal("0.1")),
+        "avg_excess_pct": avg.quantize(Decimal("0.01")),
+        "by_horizon": by_horizon,
+    }

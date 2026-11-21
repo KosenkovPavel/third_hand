@@ -10,6 +10,7 @@ from rich.console import Console
 
 from src.accounting import AccountingReport
 from src.frontends.cli import build_parser
+from src.metrics import DEFAULT_WEIGHTS
 from src.frontends.tui import (
     BUTTONS,
     DETAIL_RENDERERS,
@@ -288,14 +289,14 @@ def test_wizard_starts_when_profile_missing(fake_profile):
             app = pilot.app
             assert app.setup_mode is True
             assert app.setup_step == 0
-            assert "шаг 1/2" in _output_text(app)
-            assert "акциях" in _output_text(app)
+            assert "шаг 1/3" in _output_text(app)
+            assert "стратегия" in _output_text(app)
 
     asyncio.run(check())
 
 
 def test_wizard_validates_target(fake_profile):
-    """Шаг 1: нечисловой/вне диапазона ввод не продвигает визард."""
+    """Шаг стратегии и шаг «% в акциях»: невалидный ввод не продвигает визард."""
     fake_profile.unlink()
 
     async def check() -> None:
@@ -306,13 +307,21 @@ def test_wizard_validates_target(fake_profile):
             assert app.setup_step == 0
             app._handle_setup_input("150")
             assert app.setup_step == 0
+            # «своя структура» → ввод % в акциях
+            app._handle_setup_input("0")
+            assert app.setup_step == 10
+            app._handle_setup_input("150")
+            assert app.setup_step == 10
             assert "0–100" in _output_text(app)
+            app._handle_setup_input("70")
+            assert app.setup_step == 2
+            assert app.setup_data["target"] == {"Акции": 70, "Облигации": 30}
 
     asyncio.run(check())
 
 
-def test_wizard_full_flow_saves_profile(fake_profile, monkeypatch):
-    """Полный флоу: 70% акций → метрики → сохранение → профиль подхвачен."""
+def test_wizard_default_flow_uses_presets(fake_profile, monkeypatch):
+    """Enter-Enter: дефолтная стратегия balanced (50/30/20) и стиль balanced."""
     fake_profile.unlink()
     monkeypatch.setattr(
         "src.frontends.tui.build_multi_report",
@@ -323,13 +332,113 @@ def test_wizard_full_flow_saves_profile(fake_profile, monkeypatch):
         async with _make_app().run_test() as pilot:
             await pilot.pause()
             app = pilot.app
-            # шаг 1: 70% в акциях
+            app._handle_setup_input("")
+            assert app.setup_step == 2
+            assert app.setup_data["target"] == {"Акции": 50, "Облигации": 30, "Золото": 20}
+            app._handle_setup_input("10000")   # взносы 10к/мес
+            assert app.setup_step == 1
+            app._handle_setup_input("")
+            assert app.setup_mode is False
+            saved = json.loads(fake_profile.read_text(encoding="utf-8"))
+            assert saved["strategy"] == "balanced"
+            assert saved["contributions"] == [{"day": 1, "amount": 10000}]
+            assert saved["scoring_styles"] == ["balanced"]
+            assert app.profile.strategy == "balanced"
+            assert app.profile.target["Золото"] == Decimal("20")
+
+    asyncio.run(check())
+
+
+def test_wizard_style_multiselect(fake_profile, monkeypatch):
+    """Шаг 2: бытовой выбор «дёшево и надёжно» → стили value+quality."""
+    fake_profile.unlink()
+    monkeypatch.setattr(
+        "src.frontends.tui.build_multi_report",
+        lambda client, accounts, args, profile, console: _report(),
+    )
+
+    async def check() -> None:
+        async with _make_app().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            app._handle_setup_input("1")      # стратегия balanced
+            app._handle_setup_input("")       # взносы пропускаем
+            app._handle_setup_input("99")     # нет такого варианта
+            assert app.setup_step == 1
+            app._handle_setup_input("3")      # «дёшево и надёжно» = value + quality
+            assert app.setup_mode is False
+            saved = json.loads(fake_profile.read_text(encoding="utf-8"))
+            assert saved["scoring_styles"] == ["value", "quality"]
+            # веса — среднее двух стилей: roe (0+25)/2 = 12.5, debt_eq (15+15)/2 = 15
+            assert saved["scoring"]["roe"] == 12.5
+            assert saved["scoring"]["debt_eq"] == 15.0
+            assert app.profile.scoring_styles == ["value", "quality"]
+
+    asyncio.run(check())
+
+
+def test_settings_command_reruns_wizard_and_keeps_profile_fields(fake_profile, monkeypatch):
+    """Команда «настройка» перезапускает визард; contributions/iis не теряются."""
+    fake_profile.write_text(json.dumps({
+        "strategy": "classic",
+        "target": {"Акции": 70, "Облигации": 30},
+        "contributions": [{"day": 5, "amount": 5000}],
+        "iis": {"type": "iis3", "ndfl_rate": 0.13},
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(
+        "src.frontends.tui.build_multi_report",
+        lambda client, accounts, args, profile, console: _report(),
+    )
+
+    class _Event:
+        def __init__(self, value):
+            self.value = value
+            self.input = type("Inp", (), {"value": value})()
+
+    async def check() -> None:
+        async with _make_app().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert app.setup_mode is False
+            app.on_input_submitted(_Event("настройка"))
+            assert app.setup_mode is True
+            assert app.setup_step == 0
+            app._handle_setup_input("")   # balanced
+            app._handle_setup_input("")   # взносы — оставить текущие
+            app._handle_setup_input("")   # стиль balanced
+            assert app.setup_mode is False
+            saved = json.loads(fake_profile.read_text(encoding="utf-8"))
+            assert saved["strategy"] == "balanced"
+            assert saved["contributions"] == [{"day": 5, "amount": 5000}]
+            assert saved["iis"] == {"type": "iis3", "ndfl_rate": 0.13}
+
+    asyncio.run(check())
+
+
+def test_wizard_full_flow_saves_profile(fake_profile, monkeypatch):
+    """Полный флоу: своя структура → свои метрики → сохранение → подхват."""
+    fake_profile.unlink()
+    monkeypatch.setattr(
+        "src.frontends.tui.build_multi_report",
+        lambda client, accounts, args, profile, console: _report(),
+    )
+
+    async def check() -> None:
+        async with _make_app().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            # шаг 1: своя структура, 70% в акциях
+            app._handle_setup_input("0")
             app._handle_setup_input("70")
-            assert app.setup_step == 1
+            assert app.setup_step == 2
             assert app.setup_data["target"] == {"Акции": 70, "Облигации": 30}
-            # шаг 2: неизвестная метрика отклоняется
-            app._handle_setup_input("pe, чеготакого")
+            # шаг 2 (взносы): пропускаем; шаг 3: свой набор метрик; неизвестная отклоняется
+            app._handle_setup_input("")
             assert app.setup_step == 1
+            app._handle_setup_input("0")
+            assert app.setup_step == 11
+            app._handle_setup_input("pe, чеготакого")
+            assert app.setup_step == 11
             # выбираем метрики и завершаем
             app._handle_setup_input("pe, div_yield, roe")
             assert app.setup_mode is False
@@ -337,6 +446,7 @@ def test_wizard_full_flow_saves_profile(fake_profile, monkeypatch):
             assert fake_profile.exists()
             saved = json.loads(fake_profile.read_text(encoding="utf-8"))
             assert saved["target"] == {"Акции": 70, "Облигации": 30}
+            assert saved["strategy"] == "custom"
             assert saved["scoring"] == {"pe": 1.0, "div_yield": 1.0, "roe": 1.0}
             assert app.profile.scoring == {"pe": 1.0, "div_yield": 1.0, "roe": 1.0}
             # после визарда портфель предзагружается
@@ -350,7 +460,7 @@ def test_wizard_full_flow_saves_profile(fake_profile, monkeypatch):
 
 
 def test_wizard_default_metrics_on_empty_input(fake_profile, monkeypatch):
-    """Enter на шаге 2 → без секции scoring (дефолтные веса скоринга)."""
+    """Enter-Enter → дефолтная стратегия и дефолтный стиль скоринга (balanced)."""
     fake_profile.unlink()
     monkeypatch.setattr(
         "src.frontends.tui.build_multi_report",
@@ -361,12 +471,13 @@ def test_wizard_default_metrics_on_empty_input(fake_profile, monkeypatch):
         async with _make_app().run_test() as pilot:
             await pilot.pause()
             app = pilot.app
-            app._handle_setup_input("")          # дефолт: 70/30
-            app._handle_setup_input("")          # дефолтные метрики
+            app._handle_setup_input("")          # дефолт: стратегия balanced
+            app._handle_setup_input("")          # взносы пропускаем
+            app._handle_setup_input("")          # дефолт: стиль balanced
             assert app.setup_mode is False
             saved = json.loads(fake_profile.read_text(encoding="utf-8"))
-            assert saved["target"] == {"Акции": 70, "Облигации": 30}
-            assert "scoring" not in saved
-            assert app.profile.scoring == {}
+            assert saved["scoring_styles"] == ["balanced"]
+            assert saved["scoring"] == DEFAULT_WEIGHTS
+            assert app.profile.scoring == DEFAULT_WEIGHTS
 
     asyncio.run(check())

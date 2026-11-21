@@ -50,6 +50,42 @@ DEFAULT_TARGET: dict[str, Decimal] = {"Акции": Decimal("70"), "Облига
 
 IIS_TYPES = ("iis3", "iis_a")
 
+# Пресеты целевой структуры из бэктеста (research/REPORT.md): «note» — короткое
+# обоснование, показывается в визарде первого запуска. «custom» — свои проценты.
+STRATEGY_PRESETS: dict[str, dict] = {
+    "balanced": {
+        "label": "Сбалансированная 50/30/20 (акции/облигации/золото)",
+        "plain": "Хочу много денег и поменьше риска (рекомендуем)",
+        "note": "лучший баланс по бэктесту 2013–2026: CAGR 11,7%, просадка −33%",
+        "target": {"Акции": 50, "Облигации": 30, "Золото": 20},
+    },
+    "classic": {
+        "label": "Классическая 70/30 (акции/облигации)",
+        "plain": "Классика 70/30: акций побольше, риска тоже",
+        "note": "проверенная классика: CAGR 10,4%, просадка −38%",
+        "target": {"Акции": 70, "Облигации": 30},
+    },
+    "conservative": {
+        "label": "Консервативная (risk parity)",
+        "plain": "Только не потерять: минимум качелей",
+        "note": "минимальные просадки (−19%), ценой доходности",
+        "target": {"Акции": 40, "Облигации": 45, "Золото": 15},
+    },
+    "aggressive": {
+        "label": "Агрессивная 100% акции",
+        "plain": "Максимум доходности, готов к большим качелям",
+        "note": "максимум доходности и просадок (−51%), горизонт 15+ лет",
+        "target": {"Акции": 100},
+    },
+    "income": {
+        "label": "Доходная (облигации и дивиденды)",
+        "plain": "Регулярный доход: облигации и дивиденды",
+        "note": "регулярный денежный поток, умеренный рост",
+        "target": {"Акции": 30, "Облигации": 60, "Золото": 10},
+    },
+}
+DEFAULT_STRATEGY = "balanced"
+
 
 def _decimal(raw, field_name: str) -> Decimal:
     """Decimal из значения профиля с понятной ошибкой вместо InvalidOperation."""
@@ -149,6 +185,10 @@ class UserProfile:
     rules: Rules = field(default_factory=Rules)
     commission_pct: Decimal = DEFAULT_COMMISSION_PCT
     inflation_pct: Decimal = DEFAULT_INFLATION_PCT
+    # Ключ пресета из STRATEGY_PRESETS или "custom"/None (старый профиль).
+    strategy: str | None = None
+    # Ключи стилей из SCORING_STYLES (для отображения; движок читает scoring).
+    scoring_styles: list[str] = field(default_factory=list)
     # Настройка рейтинга: {метрика: вес}. Пустой dict → дефолтные веса (DEFAULT_WEIGHTS).
     scoring: dict[str, float] = field(default_factory=dict)
 
@@ -171,7 +211,10 @@ class UserProfile:
         }
 
     def describe(self) -> str:
-        parts = [f"{k} {v:.0f}%" for k, v in self.target.items()]
+        parts = []
+        if self.strategy and self.strategy in STRATEGY_PRESETS:
+            parts.append(STRATEGY_PRESETS[self.strategy]["label"])
+        parts += [f"{k} {v:.0f}%" for k, v in self.target.items()]
         if self.contributions:
             parts.append(
                 "пополнение: " + ", ".join(f"{c.day}-го {c.amount:.0f} ₽" for c in self.contributions)
@@ -252,6 +295,14 @@ def load_profile(path: Path | None = None) -> UserProfile:
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"невалидный вес метрики «{key}»: {value!r}") from exc
 
+    strategy = raw.get("strategy")
+    if strategy is not None and strategy != "custom" and strategy not in STRATEGY_PRESETS:
+        raise ValueError(
+            f"неизвестная стратегия «{strategy}». Доступно: "
+            f"{', '.join(STRATEGY_PRESETS)}, custom"
+        )
+    scoring_styles = [str(s) for s in raw.get("scoring_styles", []) if isinstance(s, str)]
+
     return UserProfile(
         target=target,
         contributions=contributions,
@@ -263,6 +314,8 @@ def load_profile(path: Path | None = None) -> UserProfile:
         rules=rules,
         commission_pct=commission_pct,
         inflation_pct=inflation_pct,
+        strategy=strategy,
+        scoring_styles=scoring_styles,
         scoring=scoring,
     )
 

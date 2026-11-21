@@ -14,6 +14,7 @@ from ..portfolio import (
     Allocation,
     PortfolioSnapshot,
     Position,
+    classify_position,
 )
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -354,7 +355,7 @@ def build_snapshot(client, account_id: str) -> PortfolioSnapshot:
                 ticker=ticker or pos.figi or "—",
                 name=name,
                 instrument_type=itype,
-                type_name=INSTRUMENT_TYPE_NAMES.get(itype, itype),
+                type_name=classify_position(ticker, itype, INSTRUMENT_TYPE_NAMES.get(itype, itype)),
                 asset_uid=asset_uid,
                 instrument_uid=pos.instrument_uid or instr.uid or "",
                 figi=figi,
@@ -391,6 +392,16 @@ def build_snapshot(client, account_id: str) -> PortfolioSnapshot:
     if not allocation:
         for p in positions:
             allocation[p.type_name] = allocation.get(p.type_name, Decimal("0")) + p.amount
+    else:
+        # Разбивка API считает ETF/фьючерсы своими классами; переносим суммы
+        # переклассифицированных инструментов (TMOS→Акции, TGLD→Золото и т.д.).
+        for p in positions:
+            src_class = {"etf": "ETF", "future": "Фьючерсы"}.get(p.instrument_type)
+            if src_class and p.type_name != src_class and allocation.get(src_class):
+                allocation[src_class] -= p.amount
+                if allocation[src_class] <= 0:
+                    allocation.pop(src_class, None)
+                allocation[p.type_name] = allocation.get(p.type_name, Decimal("0")) + p.amount
 
     # P&L в деньгах — сумма позиционных expected_yield (портфельный — проценты).
     total_pnl = sum(p.pnl for p in positions)
